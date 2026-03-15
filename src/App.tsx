@@ -25,7 +25,8 @@ import {
   Brain,
   Globe,
   Key,
-  History
+  History,
+  Save
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import { motion, AnimatePresence } from 'motion/react';
@@ -155,6 +156,8 @@ export default function App() {
   const [analyzingIds, setAnalyzingIds] = useState<Set<string>>(new Set());
   const [aiThrottledUntil, setAiThrottledUntil] = useState<number>(0);
   const [aiQuotaExhausted, setAiQuotaExhausted] = useState(false);
+  const [isSavingConfig, setIsSavingConfig] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
 
   // --- AI Analysis Logic (Frontend Only) ---
   const getAI = () => {
@@ -219,6 +222,11 @@ export default function App() {
                              e.message?.includes("429") ||
                              e.message?.includes("quota");
           
+          const isNetworkError = errorText.includes("Rpc failed") || 
+                                errorText.includes("xhr error") || 
+                                errorText.includes("error code: 6") ||
+                                e.message?.includes("Failed to fetch");
+
           if (isRateLimit) {
             if (i < retries) {
               const backoff = Math.pow(2, i) * 2000; 
@@ -230,6 +238,17 @@ export default function App() {
               setAiQuotaExhausted(true);
               setAiThrottledUntil(Date.now() + 2 * 60 * 1000); // Reduced to 2 minute cooldown
               throw new Error("QUOTA_EXHAUSTED");
+            }
+          }
+
+          if (isNetworkError) {
+            if (i < retries) {
+              console.warn(`Gemini Network Error (RPC/XHR). Retrying in 2s... (Attempt ${i + 1}/${retries})`);
+              await sleep(2000);
+              continue;
+            } else {
+              console.error("Gemini Persistent Network Error:", e);
+              throw new Error("GEMINI_NETWORK_FAILURE");
             }
           }
           
@@ -260,8 +279,10 @@ export default function App() {
             const text = await response.text();
             let errMessage = response.statusText;
             try {
-              const errData = JSON.parse(text);
-              errMessage = errData.error || errData.message || errMessage;
+              if (text.trim().startsWith('{')) {
+                const errData = JSON.parse(text);
+                errMessage = errData.error || errData.message || errMessage;
+              }
             } catch (parseErr) {}
             
             // If it's a 504 (Gateway Timeout) or 503 (Service Unavailable), retry
@@ -274,8 +295,14 @@ export default function App() {
             throw new Error(`DeepSeek Server Error (${response.status}): ${errMessage}`);
           }
           
-          const data = await response.json();
-          return data.content;
+          const contentType = response.headers.get('content-type');
+          if (contentType && contentType.includes('application/json')) {
+            const data = await response.json();
+            return data.content;
+          } else {
+            const text = await response.text();
+            throw new Error(`DeepSeek returned non-JSON response: ${text.slice(0, 100)}...`);
+          }
         } catch (e: any) {
           clearTimeout(timeoutId);
           
@@ -292,12 +319,13 @@ export default function App() {
           
           if (i < retries) {
             const backoff = 1000 * (i + 1);
+            console.warn(`DeepSeek Request Failed. Retrying in ${backoff}ms...`);
             await sleep(backoff);
             continue;
           }
           
-          if (e.message?.includes("fetch")) {
-            throw new Error(`DeepSeek Connection Error: Network failure or server unreachable. ${e.message}`);
+          if (e.message?.includes("fetch") || e.name === 'TypeError') {
+            throw new Error(`DeepSeek Connection Error: The server is unreachable or the request was blocked. Please check if the backend is running.`);
           }
           throw e;
         }
@@ -329,9 +357,9 @@ export default function App() {
       try {
         const res = await tryGemini();
         return cleanJsonResponse(res || "");
-      } catch (e) {
+      } catch (e: any) {
         if (switchMode === 'auto') {
-          console.warn("Gemini failed, switching to DeepSeek fallback");
+          console.warn(`Gemini failed (${e.message}), switching to DeepSeek fallback`);
           const res = await tryDeepSeek();
           return cleanJsonResponse(res || "");
         }
@@ -653,6 +681,11 @@ export default function App() {
   }, [user]);
 
   const updateConfig = async (key: string, value: string) => {
+    // Optimistic update
+    if (config) {
+      setConfig({ ...config, [key]: value });
+    }
+    
     try {
       const res = await fetch('/api/config', {
         method: 'POST',
@@ -664,6 +697,23 @@ export default function App() {
       }
     } catch (e) {
       console.error("Update config error:", e);
+    }
+  };
+
+  const saveAllConfig = async () => {
+    setIsSavingConfig(true);
+    try {
+      // Since updateConfig already updates the backend for each field,
+      // this button is more for user peace of mind and final confirmation.
+      // We'll trigger a manual scan to "obey" the command immediately.
+      await fetch('/api/scan', { method: 'POST' });
+      
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } catch (e) {
+      console.error("Save config error:", e);
+    } finally {
+      setIsSavingConfig(false);
     }
   };
 
@@ -693,14 +743,19 @@ export default function App() {
         body: JSON.stringify({ email: authEmail, password: authPassword })
       });
       
-      if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
-        const data = await res.json();
-        if (data.success) {
-          setUser(data.user);
-          setShowAuthModal(false);
-          localStorage.setItem('degenics_user', JSON.stringify(data.user));
+      if (res.ok) {
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const data = await res.json();
+          if (data.success) {
+            setUser(data.user);
+            setShowAuthModal(false);
+            localStorage.setItem('degenics_user', JSON.stringify(data.user));
+          } else {
+            setAuthError(data.error);
+          }
         } else {
-          setAuthError(data.error);
+          setAuthError('Server returned invalid response format');
         }
       } else {
         setAuthError('Server error or invalid response');
@@ -852,6 +907,20 @@ export default function App() {
             <button onClick={fetchData} className="p-2 hover:bg-white/5 rounded-lg transition-colors">
               <RefreshCw className="w-4 h-4 text-white/40" />
             </button>
+            <button 
+              onClick={async () => {
+                try {
+                  const res = await fetch('/api/scan', { method: 'POST' });
+                  if (res.ok) fetchData();
+                } catch (e) {
+                  console.error("Manual scan failed:", e);
+                }
+              }}
+              className="p-2 hover:bg-white/5 rounded-lg transition-colors group"
+              title="Force Manual Scan"
+            >
+              <Search className="w-4 h-4 text-white/40 group-hover:text-emerald-400" />
+            </button>
           </div>
         </div>
       </header>
@@ -864,30 +933,11 @@ export default function App() {
                 <AlertTriangle className="w-5 h-5 text-rose-500" />
               </div>
               <div>
-                <h4 className="font-bold text-rose-500">Gemini Quota Exhausted</h4>
-                <p className="text-xs text-rose-500/60">
-                  {config?.ai_switch_mode === 'auto' 
-                    ? "Gemini is rate-limited. Neural Engine has automatically switched to DeepSeek fallback." 
-                    : "AI analysis is temporarily paused due to Gemini rate limits. It will resume automatically in a few minutes."}
-                </p>
-              </div>
-            </div>
-            <div className="text-[10px] font-mono text-rose-500/40 uppercase">
-              Cooldown Active
-            </div>
-          </div>
-        )}
-
-        {aiQuotaExhausted && (
-          <div className="mb-8 p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-center justify-between animate-pulse">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-rose-500/20 rounded-lg flex items-center justify-center">
-                <AlertTriangle className="w-5 h-5 text-rose-500" />
-              </div>
-              <div>
                 <h4 className="font-bold text-rose-500 uppercase tracking-tighter">Neural Engine Throttled</h4>
                 <p className="text-xs text-rose-500/60">
-                  Gemini quota exhausted. {config?.ai_switch_mode === 'auto' ? 'Falling back to DeepSeek...' : 'Please wait or switch to DeepSeek in Config.'}
+                  {config?.ai_switch_mode === 'auto' 
+                    ? "Gemini quota exhausted. Neural Engine has automatically switched to DeepSeek fallback." 
+                    : "AI analysis is temporarily paused due to Gemini rate limits. It will resume automatically in a few minutes."}
                 </p>
                 <p className="text-[10px] text-rose-500/40 mt-1 italic">
                   Note: DeepSeek fallback may be slower during high traffic.
@@ -947,8 +997,8 @@ export default function App() {
                   ${(portfolioValue || 0).toFixed(2)}
                 </h3>
               </Card>
-              {(simulationStats?.balances || []).map((b: any) => (
-                <Card key={b.chain}>
+              {(simulationStats?.balances || []).map((b: any, i: number) => (
+                <Card key={b.chain || i}>
                   <p className="text-[10px] font-mono text-white/40 uppercase mb-1">{b.chain || 'Unknown'} Balance</p>
                   <h3 className="text-xl font-bold tracking-tighter">${(b.balance || 0).toFixed(2)}</h3>
                   <p className="text-[8px] font-mono text-white/20 uppercase mt-1">Persistent Simulation Balance</p>
@@ -980,10 +1030,10 @@ export default function App() {
                             </td>
                           </tr>
                         )}
-                        {(portfolio || []).map((item: any) => {
-                          const roi = item.avgBuyPrice ? ((item.currentPrice - item.avgBuyPrice) / item.avgBuyPrice) * 100 : 0;
+                        {(portfolio || []).map((item: any, i: number) => {
+                          const roi = item.avg_buy_price ? ((item.current_price - item.avg_buy_price) / item.avg_buy_price) * 100 : 0;
                           return (
-                            <tr key={item.address} className="hover:bg-white/2 transition-colors">
+                            <tr key={item.address || i} className="hover:bg-white/2 transition-colors">
                               <td className="py-3 px-4">
                                 <div className="flex flex-col">
                                   <span className="font-bold text-sm">{item.symbol || '?'}</span>
@@ -991,9 +1041,9 @@ export default function App() {
                                 </div>
                               </td>
                               <td className="py-3 px-4 text-xs font-mono">{(item.quantity || 0).toLocaleString()}</td>
-                              <td className="py-3 px-4 text-xs font-mono">${(item.avgBuyPrice || 0).toFixed(8)}</td>
-                              <td className="py-3 px-4 text-xs font-mono">${(item.currentPrice || 0).toFixed(8)}</td>
-                              <td className="py-3 px-4 text-xs font-mono font-bold">${(item.totalValue || 0).toFixed(2)}</td>
+                              <td className="py-3 px-4 text-xs font-mono">${(item.avg_buy_price || 0).toFixed(8)}</td>
+                              <td className="py-3 px-4 text-xs font-mono">${(item.current_price || 0).toFixed(8)}</td>
+                              <td className="py-3 px-4 text-xs font-mono font-bold">${(item.total_value || 0).toFixed(2)}</td>
                               <td className="py-3 px-4">
                                 <span className={cn("text-xs font-mono font-bold", roi >= 0 ? "text-emerald-400" : "text-rose-400")}>
                                   {roi >= 0 ? '+' : ''}{(roi || 0).toFixed(2)}%
@@ -1033,8 +1083,8 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-white/5">
-                        {(simulationTrades || []).map((trade: any) => (
-                          <tr key={trade.id} className="hover:bg-white/2 transition-colors">
+                        {(simulationTrades || []).map((trade: any, i: number) => (
+                          <tr key={trade.id || i} className="hover:bg-white/2 transition-colors">
                             <td className="py-3 px-4 text-[10px] font-mono text-white/40">
                               {new Date(trade.timestamp || Date.now()).toLocaleTimeString()}
                             </td>
@@ -1227,8 +1277,8 @@ export default function App() {
                         }
                         return true;
                       })
-                      .map((token) => (
-                        <tr key={token.id} className="border-b border-white/2 hover:bg-white/2 transition-colors">
+                      .map((token, i) => (
+                        <tr key={token.id || token.address || i} className="border-b border-white/2 hover:bg-white/2 transition-colors">
                         <td className="p-4">
                           <div className="flex items-center gap-2">
                             <span className="font-bold">{token.symbol}</span>
@@ -1367,9 +1417,9 @@ export default function App() {
               >
                 <div className="space-y-4">
                   <AnimatePresence mode="popLayout">
-                    {tokens.map((token) => (
+                    {tokens.map((token, i) => (
                       <motion.div
-                        key={token.id}
+                        key={token.id || token.address || i}
                         initial={{ opacity: 0, y: 20 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.95 }}
@@ -1453,7 +1503,7 @@ export default function App() {
                           </div>
                           <div className="flex items-center gap-1.5">
                             <Users className="w-3 h-3 text-sky-400" />
-                            <span className="text-[10px] font-mono text-white/60 uppercase">Sentiment: {(token.sentiment_score || 0).toFixed(0)}%%</span>
+                            <span className="text-[10px] font-mono text-white/60 uppercase">Sentiment: {(token.sentiment_score || 0).toFixed(0)}%</span>
                           </div>
                         </div>
 
@@ -1747,8 +1797,8 @@ export default function App() {
                           const dateMatch = !historyDateFilter || new Date(token.created_at).toISOString().split('T')[0] === historyDateFilter;
                           return chainMatch && winMatch && dateMatch;
                         })
-                        .map((token) => (
-                        <tr key={token.id} className="group hover:bg-white/[0.02]">
+                        .map((token, i) => (
+                        <tr key={token.id || token.address || i} className="group hover:bg-white/[0.02]">
                           <td className="py-4">
                             <div className="flex flex-col">
                               <span className="font-bold">{token.symbol}</span>
@@ -1996,6 +2046,16 @@ export default function App() {
                       </div>
                       <span className="text-[10px] font-mono text-white/20 uppercase">Learning from {stats.totalCalls} signals</span>
                     </div>
+
+                    <button 
+                      onClick={async () => {
+                        const res = await fetch('/api/neural/learn', { method: 'POST' });
+                        if (res.ok) fetchData();
+                      }}
+                      className="w-full mb-4 py-2 bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/20 rounded-lg text-[10px] font-mono text-indigo-400 uppercase transition-all flex items-center justify-center gap-2"
+                    >
+                      <Brain className="w-3 h-3" /> Trigger Neural Optimization
+                    </button>
 
                     <div className="grid grid-cols-2 gap-3 mb-4">
                       {(neuralWeights || []).map((w, i) => (
@@ -2267,6 +2327,38 @@ export default function App() {
                       ))}
                     </div>
                   </div>
+                </div>
+
+                <div className="mt-6 pt-6 border-t border-white/5 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    {saveSuccess && (
+                      <motion.div 
+                        initial={{ opacity: 0, x: -10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        className="flex items-center gap-2 text-emerald-400 text-[10px] font-mono uppercase"
+                      >
+                        <CheckCircle2 className="w-3 h-3" />
+                        Settings Applied & Bot Synced
+                      </motion.div>
+                    )}
+                  </div>
+                  <button
+                    onClick={saveAllConfig}
+                    disabled={isSavingConfig}
+                    className={cn(
+                      "px-6 py-2 rounded-lg text-[10px] font-mono uppercase font-bold transition-all flex items-center gap-2",
+                      isSavingConfig 
+                        ? "bg-white/5 text-white/20 cursor-not-allowed" 
+                        : "bg-emerald-500 text-black hover:bg-emerald-400 shadow-lg shadow-emerald-500/20"
+                    )}
+                  >
+                    {isSavingConfig ? (
+                      <RefreshCw className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <Save className="w-3 h-3" />
+                    )}
+                    {isSavingConfig ? "Applying..." : "Confirm & Apply Changes"}
+                  </button>
                 </div>
               </Card>
             </div>
