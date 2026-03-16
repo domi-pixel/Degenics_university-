@@ -81,7 +81,6 @@ interface Token {
 }
 
 interface Config {
-  telegram_token: string;
   chat_id: string;
   alerts_enabled: string;
   scanning_active: string;
@@ -2218,28 +2217,15 @@ export default function App() {
                       </div>
                       <div>
                         <h4 className="text-sm font-bold">Connect to Bot</h4>
-                        <p className="text-[10px] font-mono text-indigo-400 uppercase">@degenics_bot</p>
+                        <p className="text-[10px] font-mono text-indigo-400 uppercase">Official Bot</p>
                       </div>
                     </div>
-                    <a 
-                      href="https://t.me/degenics_bot" 
-                      target="_blank" 
-                      rel="noopener noreferrer"
+                    <button 
+                      onClick={() => alert('Please search for our bot on Telegram and send /start to get your ID.')}
                       className="block w-full py-2 bg-indigo-500 hover:bg-indigo-600 text-white text-center rounded-lg text-xs font-bold transition-all"
                     >
-                      Open Bot on Telegram
-                    </a>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-mono text-white/40 uppercase">Telegram Bot Token</label>
-                    <input 
-                      type="password"
-                      value={config.telegram_token}
-                      onChange={(e) => updateConfig('telegram_token', e.target.value)}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-emerald-500 transition-colors"
-                      placeholder="Enter your Bot Token (from @BotFather)"
-                    />
+                      How to connect
+                    </button>
                   </div>
 
                   <div className="space-y-2">
@@ -2252,9 +2238,27 @@ export default function App() {
                       placeholder="Enter your Telegram User ID"
                     />
                     <p className="text-[8px] font-mono text-white/20 uppercase">
-                      Get your ID from @userinfobot or by starting @degenics_bot
+                      Get your ID from @userinfobot or by starting our bot
                     </p>
                   </div>
+                  <button 
+                    onClick={async () => {
+                      try {
+                        const res = await fetch('/api/test/bot');
+                        const data = await res.json();
+                        if (data.success) {
+                          alert(`Bot is online! Name: ${data.bot.first_name} (@${data.bot.username})`);
+                        } else {
+                          alert(`Bot Error: ${data.error}`);
+                        }
+                      } catch (err) {
+                        alert('Failed to test bot connection.');
+                      }
+                    }}
+                    className="w-full py-2 bg-white/5 hover:bg-white/10 text-white rounded-lg text-xs font-bold transition-all border border-white/10"
+                  >
+                    Test Bot Connection
+                  </button>
                 </div>
               </Card>
 

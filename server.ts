@@ -47,8 +47,10 @@ db.exec(`
   );
 
   CREATE TABLE IF NOT EXISTS config (
-    key TEXT PRIMARY KEY,
-    value TEXT
+    user_id INTEGER,
+    key TEXT,
+    value TEXT,
+    PRIMARY KEY (user_id, key)
   );
 
   CREATE TABLE IF NOT EXISTS rugs (
@@ -124,6 +126,34 @@ try {
     console.error('Migration failed (maybe column exists):', err);
   }
 }
+
+// Migration: Ensure config has user_id column
+try {
+  db.prepare("SELECT user_id FROM config LIMIT 1").get();
+} catch (e) {
+  console.log('Migrating config: adding user_id column');
+  try {
+    // We'll recreate the table to handle the new primary key
+    db.exec(`
+      CREATE TABLE config_new (
+        user_id INTEGER,
+        key TEXT,
+        value TEXT,
+        PRIMARY KEY (user_id, key)
+      );
+      INSERT INTO config_new (user_id, key, value) SELECT NULL, key, value FROM config;
+      DROP TABLE config;
+      ALTER TABLE config_new RENAME TO config;
+    `);
+  } catch (err) {
+    console.error('Migration failed:', err);
+  }
+}
+
+// Clear all existing telegram tokens
+try {
+  db.prepare("DELETE FROM config WHERE key = ?").run('telegram_token');
+} catch (e) {}
 
 // Migration: Ensure simulation_trades has user_id column
 try {
@@ -279,16 +309,17 @@ async function learnFromTrades() {
 }
 
 // Telegram Bot Setup
+const GENERAL_BOT_TOKEN = '7865663467:AAH4umyxZ1-IpjjxqwzDhYyA8ypmizI_J8I';
 let bot: TelegramBot | null = null;
 function initBot() {
-  const token = db.prepare('SELECT value FROM config WHERE key = ?').get('telegram_token')?.value;
+  const token = GENERAL_BOT_TOKEN;
   if (token && token.trim() !== '') {
     try {
       if (bot) {
         bot.stopPolling();
       }
       bot = new TelegramBot(token, { polling: true });
-      console.log('Telegram Bot Initialized');
+      console.log('Telegram Bot Initialized with General Token');
       
       bot.on('message', (msg) => {
         const chatId = msg.chat.id;
@@ -298,10 +329,14 @@ function initBot() {
       });
 
       bot.on('polling_error', (error) => {
-        console.error('Telegram Polling Error:', error.message);
-        if (error.message.includes('409 Conflict')) {
-          console.log('Conflict detected, stopping polling...');
+        // Only log if not a 409 (conflict is common during restarts)
+        if (!error.message.includes('409 Conflict')) {
+          console.error('Telegram Polling Error:', error.message);
+        }
+        if (error.message.includes('404 Not Found')) {
+          console.error('CRITICAL: General Telegram Token is invalid (404).');
           bot?.stopPolling();
+          bot = null;
         }
       });
     } catch (e) {
@@ -380,43 +415,57 @@ async function scanNewPairs() {
 
       console.log(`[Scanner] New token detected: ${pair.baseToken.symbol} on ${chain}`);
 
-      // Auto-Simulation Trading
+      // Auto-Simulation Trading for all users
       const minNanaScore = parseFloat(db.prepare("SELECT value FROM config WHERE key = ?").get('min_nana_score')?.value || '70');
       if (nanaScore >= minNanaScore && rugRisk < 15) {
         const amountUsd = 10;
-        
-        // Check balance
-        const currentBalance = db.prepare('SELECT balance FROM balances WHERE chain = ?').get(chain)?.balance || 0;
-        if (currentBalance < amountUsd) {
-          console.log(`[Simulation] Insufficient balance on ${chain} to buy ${pair.baseToken.symbol}`);
-          continue;
-        }
-
         const price = parseFloat(pair.priceUsd);
         const quantity = amountUsd / price;
         
-        db.prepare('INSERT INTO simulation_trades (address, symbol, chain, type, amount_usd, price, reason) VALUES (?, ?, ?, ?, ?, ?, ?)')
-          .run(address, pair.baseToken.symbol, chain, 'buy', amountUsd, price, 'Neural Engine High Confidence Entry');
+        const users = db.prepare('SELECT id FROM users').all();
+        for (const user of users) {
+          try {
+            // Check balance for this user
+            const currentBalance = db.prepare('SELECT balance FROM balances WHERE user_id = ? AND chain = ?').get(user.id, chain)?.balance || 0;
+            if (currentBalance >= amountUsd) {
+              db.prepare('INSERT INTO simulation_trades (user_id, address, symbol, chain, type, amount_usd, price, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+                .run(user.id, address, pair.baseToken.symbol, chain, 'buy', amountUsd, price, 'Neural Engine High Confidence Entry');
 
-        db.prepare('UPDATE balances SET balance = balance - ? WHERE chain = ?').run(amountUsd, chain);
+              db.prepare('UPDATE balances SET balance = balance - ? WHERE user_id = ? AND chain = ?').run(amountUsd, user.id, chain);
 
-        db.prepare(`
-          INSERT INTO portfolio (address, symbol, chain, quantity, avg_buy_price, current_price, total_value)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(address) DO UPDATE SET
-            quantity = quantity + excluded.quantity,
-            avg_buy_price = (avg_buy_price * quantity + excluded.avg_buy_price * excluded.quantity) / (quantity + excluded.quantity),
-            total_value = total_value + excluded.total_value
-        `).run(address, pair.baseToken.symbol, chain, quantity, price, price, amountUsd);
-        
-        console.log(`[Simulation] Auto-bought ${pair.baseToken.symbol} due to high score (${nanaScore.toFixed(1)})`);
+              db.prepare(`
+                INSERT INTO portfolio (user_id, address, symbol, chain, quantity, avg_buy_price, current_price, total_value)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, address) DO UPDATE SET
+                  quantity = quantity + excluded.quantity,
+                  avg_buy_price = (avg_buy_price * quantity + excluded.avg_buy_price * excluded.quantity) / (quantity + excluded.quantity),
+                  total_value = total_value + excluded.total_value
+              `).run(user.id, address, pair.baseToken.symbol, chain, quantity, price, price, amountUsd);
+              
+              console.log(`[Simulation] Auto-bought ${pair.baseToken.symbol} for user ${user.id} due to high score (${nanaScore.toFixed(1)})`);
+            }
+          } catch (err) {
+            console.error(`[Simulation] Failed auto-buy for user ${user.id}:`, err);
+          }
+        }
       }
 
-      // Telegram Alert
-      const alertsEnabled = db.prepare("SELECT value FROM config WHERE key = ?").get('alerts_enabled')?.value === 'true';
-      const chatId = db.prepare("SELECT value FROM config WHERE key = ?").get('chat_id')?.value;
-      if (alertsEnabled && bot && chatId) {
-        bot.sendMessage(chatId, `🚀 *New Signal Detected!*\n\n*Token:* ${pair.baseToken.symbol}\n*Score:* ${nanaScore.toFixed(1)}\n*Chain:* ${chain}\n*Address:* \`${address}\`\n\n[DexScreener](${pair.url})`, { parse_mode: 'Markdown' });
+      // Telegram Alert for all users who have chat_id set
+      if (bot) {
+        const usersWithAlerts = db.prepare(`
+          SELECT c1.user_id, c1.value as chat_id 
+          FROM config c1
+          JOIN config c2 ON (c1.user_id = c2.user_id OR (c1.user_id IS NULL AND c2.user_id IS NULL))
+          WHERE c1.key = 'chat_id' AND c2.key = 'alerts_enabled' AND c2.value = 'true'
+        `).all();
+
+        for (const u of usersWithAlerts) {
+          try {
+            bot.sendMessage(u.chat_id, `🚀 *New Signal Detected!*\n\n*Token:* ${pair.baseToken.symbol}\n*Score:* ${nanaScore.toFixed(1)}\n*Chain:* ${chain}\n*Address:* \`${address}\`\n\n[DexScreener](${pair.url})`, { parse_mode: 'Markdown' });
+          } catch (err) {
+            console.error(`Failed to send Telegram alert to user ${u.user_id}:`, err);
+          }
+        }
       }
     }
   } catch (e) {
@@ -470,7 +519,8 @@ async function startServer() {
   });
 
   app.get('/api/config', (req, res) => {
-    const rows = db.prepare('SELECT * FROM config').all();
+    const userId = req.query.userId;
+    const rows = db.prepare('SELECT * FROM config WHERE user_id IS NULL OR user_id = ?').all(userId);
     const config = rows.reduce((acc: any, row: any) => {
       acc[row.key] = row.value;
       return acc;
@@ -479,9 +529,12 @@ async function startServer() {
   });
 
   app.post('/api/config', (req, res) => {
-    const { key, value } = req.body;
-    db.prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)').run(key, String(value));
-    if (key === 'telegram_token') initBot();
+    const { key, value, userId } = req.body;
+    // Keys that are per-user
+    const perUserKeys = ['chat_id', 'alerts_enabled'];
+    const targetUserId = perUserKeys.includes(key) ? userId : null;
+    
+    db.prepare('INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?, ?, ?)').run(targetUserId, key, String(value));
     res.json({ success: true });
   });
 
@@ -792,10 +845,21 @@ async function startServer() {
     );
 
     // Send Telegram Alert if enabled
-    const alertsEnabled = db.prepare("SELECT value FROM config WHERE key = ?").get('alerts_enabled')?.value === 'true';
-    const chatId = db.prepare("SELECT value FROM config WHERE key = ?").get('chat_id')?.value;
-    if (alertsEnabled && bot && chatId) {
-      bot.sendMessage(chatId, `🚀 *New Signal Detected!*\n\n*Token:* ${mockToken.symbol}\n*Score:* ${mockToken.nana_score.toFixed(1)}\n*Chain:* ${mockToken.chain}\n*Address:* \`${mockToken.address}\`\n\n[DexScreener](https://dexscreener.com/${mockToken.chain}/${mockToken.address})`, { parse_mode: 'Markdown' });
+    if (bot) {
+      const usersWithAlerts = db.prepare(`
+        SELECT c1.user_id, c1.value as chat_id 
+        FROM config c1
+        JOIN config c2 ON (c1.user_id = c2.user_id OR (c1.user_id IS NULL AND c2.user_id IS NULL))
+        WHERE c1.key = 'chat_id' AND c2.key = 'alerts_enabled' AND c2.value = 'true'
+      `).all();
+
+      for (const u of usersWithAlerts) {
+        try {
+          bot.sendMessage(u.chat_id, `🚀 *New Signal Detected!*\n\n*Token:* ${mockToken.symbol}\n*Score:* ${mockToken.nana_score.toFixed(1)}\n*Chain:* ${mockToken.chain}\n*Address:* \`${mockToken.address}\`\n\n[DexScreener](https://dexscreener.com/${mockToken.chain}/${mockToken.address})`, { parse_mode: 'Markdown' });
+        } catch (err) {
+          console.error(`Failed to send Telegram alert to user ${u.user_id}:`, err);
+        }
+      }
     }
 
     res.json({ success: true, id: result.lastInsertRowid });
@@ -856,6 +920,18 @@ async function startServer() {
     });
   }
 
+  app.get('/api/test/bot', async (req, res) => {
+    if (!bot) {
+      return res.status(500).json({ error: 'Bot not initialized' });
+    }
+    try {
+      const me = await bot.getMe();
+      res.json({ success: true, bot: me });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   const PORT = 3000;
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
@@ -864,7 +940,7 @@ async function startServer() {
   async function updateATHPrices() {
     console.log('[Scanner] Updating ATH prices...');
     try {
-      const tokens = db.prepare('SELECT id, address, chain, ath_price FROM tokens WHERE created_at > datetime("now", "-48 hours")').all();
+      const tokens = db.prepare("SELECT id, address, chain, ath_price FROM tokens WHERE created_at > datetime('now', '-48 hours')").all();
       for (const token of tokens) {
         try {
           const pairRes = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${token.address}`);
