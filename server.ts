@@ -19,7 +19,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT UNIQUE,
-    password TEXT
+    password TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
   CREATE TABLE IF NOT EXISTS tokens (
@@ -66,6 +67,7 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS simulation_trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
     address TEXT,
     symbol TEXT,
     chain TEXT,
@@ -78,20 +80,88 @@ db.exec(`
   );
 
   CREATE TABLE IF NOT EXISTS portfolio (
-    address TEXT PRIMARY KEY,
+    user_id INTEGER,
+    address TEXT,
     symbol TEXT,
     chain TEXT,
     quantity REAL,
     avg_buy_price REAL,
     current_price REAL,
-    total_value REAL
+    total_value REAL,
+    PRIMARY KEY (user_id, address)
   );
 
   CREATE TABLE IF NOT EXISTS neural_weights (
     factor TEXT PRIMARY KEY,
     weight REAL
   );
+
+  CREATE TABLE IF NOT EXISTS balances (
+    user_id INTEGER,
+    chain TEXT,
+    balance REAL,
+    PRIMARY KEY (user_id, chain)
+  );
 `);
+
+// Seed default balances
+const initialBalances = [
+  ['solana', 100.00],
+  ['ethereum', 100.00],
+  ['base', 100.00]
+];
+const insertBalance = db.prepare('INSERT OR IGNORE INTO balances (chain, balance) VALUES (?, ?)');
+initialBalances.forEach(([chain, balance]) => insertBalance.run(chain, balance));
+
+// Migration: Ensure users has created_at column
+try {
+  db.prepare("SELECT created_at FROM users LIMIT 1").get();
+} catch (e) {
+  console.log('Migrating users: adding created_at column');
+  try {
+    db.exec("ALTER TABLE users ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP");
+  } catch (err) {
+    console.error('Migration failed (maybe column exists):', err);
+  }
+}
+
+// Migration: Ensure simulation_trades has user_id column
+try {
+  db.prepare("SELECT user_id FROM simulation_trades LIMIT 1").get();
+} catch (e) {
+  console.log('Migrating simulation_trades: adding user_id column');
+  try {
+    db.exec("ALTER TABLE simulation_trades ADD COLUMN user_id INTEGER");
+  } catch (err) {
+    console.error('Migration failed:', err);
+  }
+}
+
+// Migration: Ensure portfolio has user_id column
+try {
+  db.prepare("SELECT user_id FROM portfolio LIMIT 1").get();
+} catch (e) {
+  console.log('Migrating portfolio: adding user_id column');
+  try {
+    // SQLite doesn't support adding a column with PRIMARY KEY constraint easily
+    // We'll just add the column and handle the logic in code for now, or recreate table
+    db.exec("ALTER TABLE portfolio ADD COLUMN user_id INTEGER");
+  } catch (err) {
+    console.error('Migration failed:', err);
+  }
+}
+
+// Migration: Ensure balances has user_id column
+try {
+  db.prepare("SELECT user_id FROM balances LIMIT 1").get();
+} catch (e) {
+  console.log('Migrating balances: adding user_id column');
+  try {
+    db.exec("ALTER TABLE balances ADD COLUMN user_id INTEGER");
+  } catch (err) {
+    console.error('Migration failed:', err);
+  }
+}
 
 // Migration: Ensure simulation_trades has address column
 try {
@@ -103,6 +173,14 @@ try {
   } catch (err) {
     console.error('Migration failed (maybe column exists):', err);
   }
+}
+
+// Migration: Update neural weights factors
+try {
+  db.prepare("UPDATE neural_weights SET factor = 'Dev Activity' WHERE factor = 'Dev History'").run();
+  db.prepare("INSERT OR IGNORE INTO neural_weights (factor, weight) VALUES ('Rug Risk', 0.10)").run();
+} catch (err) {
+  console.error('Neural weights migration failed:', err);
 }
 
 // Seed default config
@@ -126,10 +204,11 @@ defaultConfig.forEach(([key, value]) => insertConfig.run(key, value));
 
 // Neural Weights (initial)
 const initialWeights = [
-  { factor: 'Liquidity Depth', weight: 0.35 },
-  { factor: 'Holder Distribution', weight: 0.25 },
+  { factor: 'Liquidity Depth', weight: 0.30 },
+  { factor: 'Holder Distribution', weight: 0.20 },
   { factor: 'Social Velocity', weight: 0.20 },
-  { factor: 'Dev History', weight: 0.20 }
+  { factor: 'Dev Activity', weight: 0.20 },
+  { factor: 'Rug Risk', weight: 0.10 }
 ];
 
 const insertWeight = db.prepare('INSERT OR IGNORE INTO neural_weights (factor, weight) VALUES (?, ?)');
@@ -143,18 +222,22 @@ function calculateNanaScore(factors: any) {
   const weights = getNeuralWeights();
   let score = 0;
   weights.forEach((w: any) => {
-    if (factors[w.factor]) {
-      score += factors[w.factor] * w.weight;
+    if (factors[w.factor] !== undefined) {
+      if (w.factor === 'Rug Risk') {
+        // Rug risk is a negative factor
+        score -= factors[w.factor] * w.weight;
+      } else {
+        score += factors[w.factor] * w.weight;
+      }
     }
   });
-  // Add some randomness/base score to keep it interesting
-  return Math.min(100, Math.max(0, score + (Math.random() * 10 - 5)));
+  return Math.min(100, Math.max(0, score));
 }
 
 async function learnFromTrades() {
   console.log('[Neural Engine] Learning from recent trades...');
   const recentSells = db.prepare(`
-    SELECT t.*, tok.liquidity, tok.sentiment_score, tok.dev_activity_score
+    SELECT t.*, tok.liquidity, tok.sentiment_score, tok.dev_activity_score, tok.rug_risk_score
     FROM simulation_trades t
     JOIN tokens tok ON t.address = tok.address
     WHERE t.type = 'sell' AND t.timestamp > datetime('now', '-24 hours')
@@ -175,7 +258,8 @@ async function learnFromTrades() {
       let factorValue = 0.5; // Default
       if (w.factor === 'Liquidity Depth') factorValue = Math.min(1, trade.liquidity / 100000);
       if (w.factor === 'Social Velocity') factorValue = trade.sentiment_score / 100;
-      if (w.factor === 'Dev History') factorValue = trade.dev_activity_score / 100;
+      if (w.factor === 'Dev Activity') factorValue = trade.dev_activity_score / 100;
+      if (w.factor === 'Rug Risk') factorValue = trade.rug_risk_score / 100;
       if (w.factor === 'Holder Distribution') factorValue = 0.6; // Mock
 
       w.weight += adjustment * (factorValue - 0.5);
@@ -263,17 +347,23 @@ async function scanNewPairs() {
       // Basic filtering
       if (liquidity < 5000) continue;
 
+      // More realistic rug risk calculation
+      let rugRisk = 20 + Math.random() * 30; // Base risk
+      if (liquidity > 50000) rugRisk -= 10;
+      if (mcap > 500000) rugRisk -= 5;
+      if (pair.boosts && pair.boosts.active > 0) rugRisk -= 5;
+      
       const sentiment = 50 + Math.random() * 40;
       const devActivity = Math.random() * 100;
       
+      // Improved scaling for the "trenches"
       const nanaScore = calculateNanaScore({
-        'Liquidity Depth': Math.min(100, liquidity / 1000),
-        'Holder Distribution': 70, // Mock
+        'Liquidity Depth': Math.min(100, (liquidity / 25000) * 100), // $25k liquidity = 100 score for this factor
+        'Holder Distribution': 75 + (Math.random() * 15), 
         'Social Velocity': sentiment,
-        'Dev History': devActivity
+        'Dev Activity': devActivity,
+        'Rug Risk': rugRisk
       });
-
-      const rugRisk = Math.random() * 50;
 
       const result = db.prepare(`
         INSERT INTO tokens (
@@ -291,14 +381,24 @@ async function scanNewPairs() {
       console.log(`[Scanner] New token detected: ${pair.baseToken.symbol} on ${chain}`);
 
       // Auto-Simulation Trading
-      const minNanaScore = parseFloat(db.prepare("SELECT value FROM config WHERE key = ?").get('min_nana_score')?.value || '85');
-      if (nanaScore > minNanaScore && rugRisk < 15) {
+      const minNanaScore = parseFloat(db.prepare("SELECT value FROM config WHERE key = ?").get('min_nana_score')?.value || '70');
+      if (nanaScore >= minNanaScore && rugRisk < 15) {
         const amountUsd = 10;
+        
+        // Check balance
+        const currentBalance = db.prepare('SELECT balance FROM balances WHERE chain = ?').get(chain)?.balance || 0;
+        if (currentBalance < amountUsd) {
+          console.log(`[Simulation] Insufficient balance on ${chain} to buy ${pair.baseToken.symbol}`);
+          continue;
+        }
+
         const price = parseFloat(pair.priceUsd);
         const quantity = amountUsd / price;
         
         db.prepare('INSERT INTO simulation_trades (address, symbol, chain, type, amount_usd, price, reason) VALUES (?, ?, ?, ?, ?, ?, ?)')
           .run(address, pair.baseToken.symbol, chain, 'buy', amountUsd, price, 'Neural Engine High Confidence Entry');
+
+        db.prepare('UPDATE balances SET balance = balance - ? WHERE chain = ?').run(amountUsd, chain);
 
         db.prepare(`
           INSERT INTO portfolio (address, symbol, chain, quantity, avg_buy_price, current_price, total_value)
@@ -386,12 +486,25 @@ async function startServer() {
   });
 
   app.get('/api/tokens', (req, res) => {
-    const tokens = db.prepare('SELECT * FROM tokens ORDER BY created_at DESC LIMIT 50').all();
+    const since = req.query.since as string;
+    let tokens;
+    if (since) {
+      tokens = db.prepare('SELECT * FROM tokens WHERE created_at >= ? ORDER BY created_at DESC LIMIT 50').all(since);
+    } else {
+      // Default to last 24 hours for unauthenticated or fresh view
+      tokens = db.prepare("SELECT * FROM tokens WHERE created_at > datetime('now', '-24 hours') ORDER BY created_at DESC LIMIT 50").all();
+    }
     res.json(tokens);
   });
 
   app.get('/api/tokens/history', (req, res) => {
-    const tokens = db.prepare('SELECT * FROM tokens ORDER BY created_at DESC').all();
+    const since = req.query.since as string;
+    let tokens;
+    if (since) {
+      tokens = db.prepare('SELECT * FROM tokens WHERE created_at >= ? ORDER BY created_at DESC').all(since);
+    } else {
+      tokens = db.prepare('SELECT * FROM tokens ORDER BY created_at DESC').all();
+    }
     res.json(tokens);
   });
 
@@ -443,20 +556,21 @@ async function startServer() {
   });
 
   app.get('/api/simulation/trades', (req, res) => {
-    const trades = db.prepare('SELECT * FROM simulation_trades ORDER BY timestamp DESC LIMIT 50').all();
+    const userId = req.query.userId;
+    if (!userId) return res.json([]);
+    const trades = db.prepare('SELECT * FROM simulation_trades WHERE user_id = ? ORDER BY timestamp DESC LIMIT 50').all(userId);
     res.json(trades);
   });
 
   app.get('/api/simulation/stats', (req, res) => {
+    const userId = req.query.userId;
+    if (!userId) return res.json({ totalProfit: 0, balances: [] });
     try {
-      const totalProfit = db.prepare("SELECT SUM(profit_usd) as total FROM simulation_trades WHERE type = ?").get('sell')?.total || 0;
+      const totalProfit = db.prepare("SELECT SUM(profit_usd) as total FROM simulation_trades WHERE user_id = ? AND type = ?").get(userId, 'sell')?.total || 0;
+      const balances = db.prepare("SELECT * FROM balances WHERE user_id = ?").all(userId);
       res.json({
         totalProfit,
-        balances: [
-          { chain: 'Solana', balance: 1250.45 },
-          { chain: 'Ethereum', balance: 840.20 },
-          { chain: 'Base', balance: 450.10 }
-        ]
+        balances
       });
     } catch (e) {
       console.error('Error in /api/simulation/stats:', e);
@@ -464,9 +578,32 @@ async function startServer() {
     }
   });
 
-  app.get('/api/simulation/portfolio', (req, res) => {
+  app.get('/api/simulation/portfolio', async (req, res) => {
+    const userId = req.query.userId;
+    if (!userId) return res.json({ portfolio: [], totalValue: 0 });
     try {
-      const portfolio = db.prepare('SELECT * FROM portfolio').all();
+      const portfolio = db.prepare('SELECT * FROM portfolio WHERE user_id = ?').all(userId);
+      
+      // Update prices for each item in portfolio
+      for (const item of portfolio) {
+        try {
+          const pairRes = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${item.address}`);
+          const pairs = pairRes.data.pairs || [];
+          const pair = pairs.find((p: any) => p.chainId === item.chain) || pairs[0];
+          
+          if (pair) {
+            const newPrice = parseFloat(pair.priceUsd);
+            const newValue = item.quantity * newPrice;
+            db.prepare('UPDATE portfolio SET current_price = ?, total_value = ? WHERE user_id = ? AND address = ?')
+              .run(newPrice, newValue, userId, item.address);
+            item.current_price = newPrice;
+            item.total_value = newValue;
+          }
+        } catch (err) {
+          console.error(`Failed to update price for ${item.symbol}:`, err);
+        }
+      }
+
       const totalValue = portfolio.reduce((acc: number, item: any) => acc + (item.total_value || 0), 0);
       res.json({
         portfolio,
@@ -478,48 +615,98 @@ async function startServer() {
     }
   });
 
-  app.post('/api/simulation/manual-buy', (req, res) => {
-    const { address, chain, amount_usd, reason } = req.body;
-    // In a real app, we'd fetch token info from DexScreener here
-    const symbol = 'SIM'; 
-    const price = 0.0001;
-    const quantity = amount_usd / price;
-
-    db.prepare('INSERT INTO simulation_trades (address, symbol, chain, type, amount_usd, price, reason) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(address, symbol, chain, 'buy', amount_usd, price, reason);
-
-    db.prepare(`
-      INSERT INTO portfolio (address, symbol, chain, quantity, avg_buy_price, current_price, total_value)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(address) DO UPDATE SET
-        quantity = quantity + excluded.quantity,
-        avg_buy_price = (avg_buy_price * quantity + excluded.avg_buy_price * excluded.quantity) / (quantity + excluded.quantity),
-        total_value = total_value + excluded.total_value
-    `).run(address, symbol, chain, quantity, price, price, amount_usd);
-
-    res.json({ success: true });
-  });
-
-  app.post('/api/simulation/manual-sell', (req, res) => {
-    const { address, chain, percent, reason } = req.body;
-    const holding = db.prepare('SELECT * FROM portfolio WHERE address = ?').get(address);
-    if (!holding) return res.status(404).json({ error: 'Not holding this token' });
-
-    const sellQty = holding.quantity * (percent / 100);
-    const sellPrice = holding.current_price * 1.2; // Simulate 20% profit for now
-    const amountUsd = sellQty * sellPrice;
-    const profit = (sellPrice - holding.avg_buy_price) * sellQty;
-
-    db.prepare('INSERT INTO simulation_trades (address, symbol, chain, type, amount_usd, price, profit_usd, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(address, holding.symbol, chain, 'sell', amountUsd, sellPrice, profit, reason);
-
-    if (percent >= 100) {
-      db.prepare('DELETE FROM portfolio WHERE address = ?').run(address);
-    } else {
-      db.prepare('UPDATE portfolio SET quantity = quantity - ?, total_value = total_value - ? WHERE address = ?')
-        .run(sellQty, amountUsd, address);
+  app.post('/api/simulation/manual-buy', async (req, res) => {
+    const { address, chain, amount_usd, reason, userId } = req.body;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!address || !chain || !amount_usd || amount_usd <= 0) {
+      return res.status(400).json({ error: 'Invalid parameters' });
+    }
+    
+    // Check balance
+    const currentBalance = db.prepare('SELECT balance FROM balances WHERE user_id = ? AND chain = ?').get(userId, chain)?.balance || 0;
+    if (currentBalance < amount_usd) {
+      return res.status(400).json({ error: 'Insufficient balance' });
     }
 
+    try {
+      // Fetch token info from DexScreener
+      const pairRes = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
+      const pairs = pairRes.data.pairs || [];
+      const pair = pairs.find((p: any) => p.chainId === chain) || pairs[0];
+
+      if (!pair) {
+        return res.status(404).json({ error: 'Token not found on DexScreener' });
+      }
+
+      const symbol = pair.baseToken.symbol;
+      const price = parseFloat(pair.priceUsd);
+      const quantity = amount_usd / price;
+
+      db.prepare('INSERT INTO simulation_trades (user_id, address, symbol, chain, type, amount_usd, price, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(userId, address, symbol, chain, 'buy', amount_usd, price, reason);
+
+      db.prepare('UPDATE balances SET balance = balance - ? WHERE user_id = ? AND chain = ?').run(amount_usd, userId, chain);
+
+      db.prepare(`
+        INSERT INTO portfolio (user_id, address, symbol, chain, quantity, avg_buy_price, current_price, total_value)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, address) DO UPDATE SET
+          quantity = quantity + excluded.quantity,
+          avg_buy_price = (avg_buy_price * quantity + excluded.avg_buy_price * excluded.quantity) / (quantity + excluded.quantity),
+          total_value = total_value + excluded.total_value
+      `).run(userId, address, symbol, chain, quantity, price, price, amount_usd);
+
+      res.json({ success: true });
+    } catch (e) {
+      console.error('Error in /api/simulation/manual-buy:', e);
+      res.status(500).json({ error: 'Failed to fetch token data' });
+    }
+  });
+
+  app.post('/api/simulation/manual-sell', async (req, res) => {
+    const { address, chain, percent, reason, userId } = req.body;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!address || !chain || !percent || percent <= 0 || percent > 100) {
+      return res.status(400).json({ error: 'Invalid parameters' });
+    }
+    
+    const holding = db.prepare('SELECT * FROM portfolio WHERE user_id = ? AND address = ?').get(userId, address);
+    if (!holding) return res.status(404).json({ error: 'Not holding this token' });
+
+    try {
+      // Fetch latest price from DexScreener
+      const pairRes = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
+      const pairs = pairRes.data.pairs || [];
+      const pair = pairs.find((p: any) => p.chainId === chain) || pairs[0];
+      
+      const sellPrice = pair ? parseFloat(pair.priceUsd) : holding.current_price;
+      const sellQty = holding.quantity * (percent / 100);
+      const amountUsd = sellQty * sellPrice;
+      const profit = (sellPrice - holding.avg_buy_price) * sellQty;
+
+      db.prepare('INSERT INTO simulation_trades (user_id, address, symbol, chain, type, amount_usd, price, profit_usd, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(userId, address, holding.symbol, chain, 'sell', amountUsd, sellPrice, profit, reason);
+
+      db.prepare('UPDATE balances SET balance = balance + ? WHERE user_id = ? AND chain = ?').run(amountUsd, userId, chain);
+
+      if (percent >= 100) {
+        db.prepare('DELETE FROM portfolio WHERE user_id = ? AND address = ?').run(userId, address);
+      } else {
+        db.prepare('UPDATE portfolio SET quantity = quantity - ?, total_value = (quantity - ?) * ?, current_price = ? WHERE user_id = ? AND address = ?')
+          .run(sellQty, sellQty, sellPrice, sellPrice, userId, address);
+      }
+
+      res.json({ success: true });
+    } catch (e) {
+      console.error('Error in /api/simulation/manual-sell:', e);
+      res.status(500).json({ error: 'Failed to fetch token data' });
+    }
+  });
+
+  app.post('/api/simulation/reset-balances', (req, res) => {
+    const userId = req.body.userId;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    db.prepare('UPDATE balances SET balance = 100.00 WHERE user_id = ?').run(userId);
     res.json({ success: true });
   });
 
@@ -532,11 +719,17 @@ async function startServer() {
     res.json(getNeuralWeights());
   });
 
+  app.post('/api/neural/weights', (req, res) => {
+    const { factor, weight } = req.body;
+    db.prepare('UPDATE neural_weights SET weight = ? WHERE factor = ?').run(weight, factor);
+    res.json({ success: true });
+  });
+
   app.post('/api/login', (req, res) => {
     const { email, password } = req.body;
     const user = db.prepare('SELECT * FROM users WHERE email = ? AND password = ?').get(email, password);
     if (user) {
-      res.json({ success: true, user: { email: user.email } });
+      res.json({ success: true, user: { id: user.id, email: user.email, created_at: user.created_at } });
     } else {
       res.json({ success: false, error: 'Invalid credentials' });
     }
@@ -545,9 +738,17 @@ async function startServer() {
   app.post('/api/signup', (req, res) => {
     const { email, password } = req.body;
     try {
-      db.prepare('INSERT INTO users (email, password) VALUES (?, ?)').run(email, password);
-      res.json({ success: true, user: { email } });
+      const result = db.prepare('INSERT INTO users (email, password) VALUES (?, ?)').run(email, password);
+      const user = db.prepare('SELECT * FROM users WHERE id = ?').get(result.lastInsertRowid);
+      
+      // Initialize balances for new user
+      const initialBalances = [['solana', 100.00], ['ethereum', 100.00], ['base', 100.00]];
+      const insertBalance = db.prepare('INSERT OR IGNORE INTO balances (user_id, chain, balance) VALUES (?, ?, ?)');
+      initialBalances.forEach(([chain, balance]) => insertBalance.run(user.id, chain, balance));
+
+      res.json({ success: true, user: { id: user.id, email: user.email, created_at: user.created_at } });
     } catch (e) {
+      console.error('Signup error:', e);
       res.json({ success: false, error: 'Email already exists' });
     }
   });
@@ -659,6 +860,40 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
+
+  async function updateATHPrices() {
+    console.log('[Scanner] Updating ATH prices...');
+    try {
+      const tokens = db.prepare('SELECT id, address, chain, ath_price FROM tokens WHERE created_at > datetime("now", "-48 hours")').all();
+      for (const token of tokens) {
+        try {
+          const pairRes = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${token.address}`);
+          const pairs = pairRes.data.pairs || [];
+          const pair = pairs.find((p: any) => p.chainId === token.chain) || pairs[0];
+          
+          if (pair) {
+            const currentPrice = parseFloat(pair.priceUsd);
+            if (currentPrice > token.ath_price) {
+              db.prepare('UPDATE tokens SET ath_price = ?, current_price = ? WHERE id = ?').run(currentPrice, currentPrice, token.id);
+            } else {
+              db.prepare('UPDATE tokens SET current_price = ? WHERE id = ?').run(currentPrice, token.id);
+            }
+          }
+        } catch (err) {
+          // Silent fail for individual tokens
+        }
+        // Sleep slightly to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    } catch (e) {
+      console.error('Failed to update ATH prices:', e);
+    }
+  }
+
+  // Start background scanner
+  setInterval(scanNewPairs, 60000); // Scan every minute
+  setInterval(updateATHPrices, 300000); // Update ATH every 5 minutes
+  setInterval(learnFromTrades, 3600000); // Learn every hour
 }
 
 startServer();

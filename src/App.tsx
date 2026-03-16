@@ -99,6 +99,7 @@ interface Config {
 interface User {
   id: string;
   email: string;
+  created_at: string;
 }
 
 // --- Components ---
@@ -616,17 +617,21 @@ export default function App() {
       }
 
       const configUrl = user ? `/api/config?userId=${user.id}` : '/api/config';
+      const sinceParam = user?.created_at ? `?since=${user.created_at}` : '';
+      const userQuery = user ? `&userId=${user.id}` : '';
+      const userQueryOnly = user ? `?userId=${user.id}` : '';
+      
       const results = await Promise.all([
-        fetch('/api/tokens'),
+        fetch(`/api/tokens${sinceParam}`),
         fetch(configUrl),
         fetch('/api/stats'),
         fetch('/api/rugs'),
         fetch('/api/insights'),
-        fetch('/api/simulation/trades'),
-        fetch('/api/simulation/stats'),
-        fetch('/api/simulation/portfolio'),
+        fetch(`/api/simulation/trades${userQueryOnly}`),
+        fetch(`/api/simulation/stats${userQueryOnly}`),
+        fetch(`/api/simulation/portfolio${userQueryOnly}`),
         fetch('/api/neural/weights'),
-        fetch('/api/tokens/history')
+        fetch(`/api/tokens/history${sinceParam}`)
       ]);
 
       const safeJson = async (res: Response) => {
@@ -751,6 +756,9 @@ export default function App() {
             setUser(data.user);
             setShowAuthModal(false);
             localStorage.setItem('degenics_user', JSON.stringify(data.user));
+            // Reset to live tab on login to refresh data with user's created_at
+            setActiveTab('live');
+            fetchData();
           } else {
             setAuthError(data.error);
           }
@@ -765,12 +773,12 @@ export default function App() {
     }
   };
 
-  const handleManualBuy = async (tokenAddress: string, chain: string, amountUsd: number, reason: string) => {
+  const handleManualBuy = async (address: string, chain: string, amount_usd: number, reason: string) => {
     try {
       const res = await fetch('/api/simulation/manual-buy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tokenAddress, chain, amountUsd, reason })
+        body: JSON.stringify({ address, chain, amount_usd, reason, userId: user?.id })
       });
       const data = await res.json();
       if (data.success) {
@@ -783,12 +791,12 @@ export default function App() {
     }
   };
 
-  const handleManualSell = async (tokenAddress: string, chain: string, percentage: number, reason: string) => {
+  const handleManualSell = async (address: string, chain: string, percent: number, reason: string) => {
     try {
       const res = await fetch('/api/simulation/manual-sell', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tokenAddress, chain, percentage, reason })
+        body: JSON.stringify({ address, chain, percent, reason, userId: user?.id })
       });
       const data = await res.json();
       if (data.success) {
@@ -847,13 +855,26 @@ export default function App() {
             {(['live', 'performance', 'simulation', 'social', 'history', 'config'] as const).map((tab) => (
               <button
                 key={tab}
-                onClick={() => setActiveTab(tab)}
+                onClick={() => {
+                  if (tab !== 'live' && !user) {
+                    setAuthMode('login');
+                    setShowAuthModal(true);
+                    return;
+                  }
+                  setActiveTab(tab);
+                }}
                 className={cn(
                   "px-4 py-1.5 rounded-md text-xs font-mono uppercase tracking-wider transition-all",
-                  activeTab === tab ? "bg-emerald-500 text-black font-bold" : "text-white/40 hover:text-white/80"
+                  activeTab === tab ? "bg-emerald-500 text-black font-bold" : "text-white/40 hover:text-white/80",
+                  tab !== 'live' && !user && "opacity-50"
                 )}
               >
-                {tab}
+                {tab === 'live' ? tab : (
+                  <div className="flex items-center gap-1.5">
+                    {tab}
+                    {!user && <Lock className="w-3 h-3" />}
+                  </div>
+                )}
               </button>
             ))}
           </nav>
@@ -985,11 +1006,29 @@ export default function App() {
         {activeTab === 'simulation' && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-              <Card className="bg-gradient-to-br from-emerald-500/5 to-transparent">
+              <Card className="bg-gradient-to-br from-emerald-500/5 to-transparent relative group">
                 <p className="text-[10px] font-mono text-white/40 uppercase mb-1">Total Simulation Profit</p>
-                <h3 className="text-3xl font-bold tracking-tighter text-emerald-400">
-                  +${(simulationStats?.totalProfit || 0).toFixed(2)}
+                <h3 className={cn(
+                  "text-3xl font-bold tracking-tighter",
+                  (simulationStats?.totalProfit || 0) >= 0 ? "text-emerald-400" : "text-red-400"
+                )}>
+                  {(simulationStats?.totalProfit || 0) >= 0 ? '+' : ''}${(simulationStats?.totalProfit || 0).toFixed(2)}
                 </h3>
+                <button 
+                  onClick={async () => {
+                    if (confirm('Reset all simulation balances to $100?')) {
+                      const res = await fetch('/api/simulation/reset-balances', { 
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ userId: user?.id })
+                      });
+                      if (res.ok) fetchData();
+                    }
+                  }}
+                  className="absolute top-2 right-2 p-1 bg-red-500/20 hover:bg-red-500/40 rounded text-[8px] font-mono text-red-400 uppercase transition-all"
+                >
+                  Reset
+                </button>
               </Card>
               <Card className="bg-gradient-to-br from-indigo-500/5 to-transparent">
                 <p className="text-[10px] font-mono text-white/40 uppercase mb-1">Portfolio Value</p>
@@ -2060,13 +2099,27 @@ export default function App() {
                     <div className="grid grid-cols-2 gap-3 mb-4">
                       {(neuralWeights || []).map((w, i) => (
                         <div key={i} className="bg-white/5 p-3 rounded-lg border border-white/5">
-                          <p className="text-[10px] font-mono text-white/40 uppercase mb-1">{w.factor}</p>
-                          <div className="flex items-end justify-between">
-                            <span className="text-lg font-bold tracking-tighter">{(w.weight || 0).toFixed(3)}</span>
-                            <div className="w-12 h-1 bg-white/10 rounded-full overflow-hidden">
-                              <div className="bg-emerald-500 h-full" style={{ width: `${Math.min(100, w.weight * 200)}%` }} />
-                            </div>
+                          <div className="flex items-center justify-between mb-2">
+                            <p className="text-[10px] font-mono text-white/40 uppercase">{w.factor}</p>
+                            <span className="text-[10px] font-mono text-emerald-400 font-bold">{(w.weight || 0).toFixed(2)}</span>
                           </div>
+                          <input 
+                            type="range"
+                            min="0.01"
+                            max="1.0"
+                            step="0.01"
+                            value={w.weight}
+                            onChange={async (e) => {
+                              const newWeight = parseFloat(e.target.value);
+                              const res = await fetch('/api/neural/weights', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ factor: w.factor, weight: newWeight })
+                              });
+                              if (res.ok) fetchData();
+                            }}
+                            className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                          />
                         </div>
                       ))}
                     </div>
