@@ -2220,12 +2220,15 @@ export default function App() {
                         <p className="text-[10px] font-mono text-indigo-400 uppercase">Official Bot</p>
                       </div>
                     </div>
-                    <button 
-                      onClick={() => alert('Please search for our bot on Telegram and send /start to get your ID.')}
-                      className="block w-full py-2 bg-indigo-500 hover:bg-indigo-600 text-white text-center rounded-lg text-xs font-bold transition-all"
+                    <a 
+                      href="https://t.me/degenics_bot"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block w-full py-2 bg-indigo-500 hover:bg-indigo-600 text-white text-center rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2"
                     >
-                      How to connect
-                    </button>
+                      <Send className="w-3 h-3" />
+                      Open Telegram Bot
+                    </a>
                   </div>
 
                   <div className="space-y-2">
@@ -2238,7 +2241,7 @@ export default function App() {
                       placeholder="Enter your Telegram User ID"
                     />
                     <p className="text-[8px] font-mono text-white/20 uppercase">
-                      Get your ID from @userinfobot or by starting our bot
+                      Get your ID from @userinfobot or by using the link above
                     </p>
                   </div>
                   <button 
