@@ -43,6 +43,9 @@ db.exec(`
     ai_rug_verdict TEXT,
     ai_social_verdict TEXT,
     dev_activity_score REAL DEFAULT 0,
+    alert_2x_sent INTEGER DEFAULT 0,
+    alert_5x_sent INTEGER DEFAULT 0,
+    alert_20x_sent INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -219,6 +222,20 @@ try {
   }
 }
 
+// Migration: Ensure tokens has alert tracking columns
+try {
+  db.prepare("SELECT alert_2x_sent FROM tokens LIMIT 1").get();
+} catch (e) {
+  console.log('Migrating tokens: adding alert tracking columns');
+  try {
+    db.exec("ALTER TABLE tokens ADD COLUMN alert_2x_sent INTEGER DEFAULT 0");
+    db.exec("ALTER TABLE tokens ADD COLUMN alert_5x_sent INTEGER DEFAULT 0");
+    db.exec("ALTER TABLE tokens ADD COLUMN alert_20x_sent INTEGER DEFAULT 0");
+  } catch (err) {
+    console.error('Migration failed:', err);
+  }
+}
+
 // Migration: Update neural weights factors
 try {
   db.prepare("UPDATE neural_weights SET factor = 'Dev Activity' WHERE factor = 'Dev History'").run();
@@ -376,6 +393,8 @@ function initBot() {
 /reset - Reset your simulation balances
 /pause - Pause the scanning engine
 /resume - Resume the scanning engine
+/history - View top 10 tokens from the last 24h (sorted by ATH)
+/config_group <id> - Set your Telegram Group ID for alerts
 /commands - Show this list`;
           await bot?.sendMessage(chatId, help, { parse_mode: 'Markdown' });
           return;
@@ -1375,7 +1394,7 @@ async function startServer() {
   async function updateATHPrices() {
     console.log('[Scanner] Updating ATH prices...');
     try {
-      const tokens = db.prepare("SELECT id, address, chain, ath_price FROM tokens WHERE created_at > datetime('now', '-48 hours')").all();
+      const tokens = db.prepare("SELECT id, address, chain, ath_price, call_price, symbol, alert_2x_sent, alert_5x_sent, alert_20x_sent FROM tokens WHERE created_at > datetime('now', '-48 hours')").all();
       for (const token of tokens) {
         try {
           const pairRes = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${token.address}`);
@@ -1384,6 +1403,49 @@ async function startServer() {
           
           if (pair) {
             const currentPrice = parseFloat(pair.priceUsd);
+            const multiplier = currentPrice / token.call_price;
+            
+            // Check for milestones
+            let milestoneReached = 0;
+            let milestoneText = "";
+            
+            if (multiplier >= 20 && !token.alert_20x_sent) {
+              milestoneReached = 20;
+              milestoneText = "🔥 20X MEGA WIN! 🔥";
+              db.prepare('UPDATE tokens SET alert_20x_sent = 1, alert_5x_sent = 1, alert_2x_sent = 1 WHERE id = ?').run(token.id);
+            } else if (multiplier >= 5 && !token.alert_5x_sent) {
+              milestoneReached = 5;
+              milestoneText = "🚀 5X BIG WIN! 🚀";
+              db.prepare('UPDATE tokens SET alert_5x_sent = 1, alert_2x_sent = 1 WHERE id = ?').run(token.id);
+            } else if (multiplier >= 2 && !token.alert_2x_sent) {
+              milestoneReached = 2;
+              milestoneText = "✅ 2X WIN! ✅";
+              db.prepare('UPDATE tokens SET alert_2x_sent = 1 WHERE id = ?').run(token.id);
+            }
+
+            if (milestoneReached > 0 && bot) {
+              const winMsg = `${milestoneText}\n\n*Token:* ${token.symbol}\n*Multiplier:* ${multiplier.toFixed(2)}x\n*Current Price:* $${currentPrice.toFixed(8)}\n*Call Price:* $${token.call_price.toFixed(8)}\n\n[DexScreener](https://dexscreener.com/${token.chain}/${token.address})`;
+              
+              // Send to all users with alerts enabled
+              const users = db.prepare(`
+                SELECT c1.value as chat_id, c2.value as group_id 
+                FROM config c1 
+                LEFT JOIN config c2 ON c1.user_id = c2.user_id AND c2.key = 'telegram_group_id'
+                WHERE c1.key = 'chat_id' AND EXISTS (
+                  SELECT 1 FROM config c3 WHERE c3.user_id = c1.user_id AND c3.key = 'alerts_enabled' AND c3.value = 'true'
+                )
+              `).all();
+
+              for (const u of users) {
+                if (u.chat_id) {
+                  bot.sendMessage(u.chat_id, winMsg, { parse_mode: 'Markdown' }).catch(() => {});
+                }
+                if (u.group_id) {
+                  bot.sendMessage(u.group_id, winMsg, { parse_mode: 'Markdown' }).catch(() => {});
+                }
+              }
+            }
+
             if (currentPrice > token.ath_price) {
               db.prepare('UPDATE tokens SET ath_price = ?, current_price = ? WHERE id = ?').run(currentPrice, currentPrice, token.id);
             } else {
