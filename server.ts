@@ -393,7 +393,7 @@ function initBot() {
 /reset - Reset your simulation balances
 /pause - Pause the scanning engine
 /resume - Resume the scanning engine
-/history - View top 10 tokens from the last 24h (sorted by ATH)
+/history - View the last 20 tokens that were called
 /config_group <id> - Set your Telegram Group ID for alerts
 /commands - Show this list`;
           await bot?.sendMessage(chatId, help, { parse_mode: 'Markdown' });
@@ -700,18 +700,16 @@ function initBot() {
           }
 
           if (text === '/history') {
-            const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
             const history = db.prepare(`
               SELECT symbol, ath_price, call_price, (ath_price / call_price) as multiplier 
               FROM tokens 
-              WHERE created_at > ? 
-              ORDER BY multiplier DESC 
-              LIMIT 10
-            `).all(yesterday);
+              ORDER BY created_at DESC 
+              LIMIT 20
+            `).all();
 
-            let msgText = `👼 *24h Call History (Top Performers)*\n\n`;
+            let msgText = `👼 *Last 20 Signal History*\n\n`;
             if (history.length === 0) {
-              msgText += "_No calls in the last 24 hours._";
+              msgText += "_No signals recorded yet._";
             } else {
               history.forEach((t: any, i: number) => {
                 msgText += `${i+1}. *${t.symbol}* - ATH: $${t.ath_price.toFixed(6)} (${t.multiplier.toFixed(1)}x)\n`;
