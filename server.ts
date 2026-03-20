@@ -52,6 +52,20 @@ db.exec(`
     value TEXT,
     PRIMARY KEY (user_id, key)
   );
+`);
+
+// Seed default config if not exists
+const defaultConfigInitial = [
+  [null, 'scanning_active', 'true'],
+  [null, 'min_nana_score', '70'],
+  [null, 'min_liquidity', '5000'],
+  [null, 'max_rug_score', '50'],
+  [null, 'telegram_group_id', '']
+];
+const insertConfigInitial = db.prepare('INSERT OR IGNORE INTO config (user_id, key, value) VALUES (?, ?, ?)');
+defaultConfigInitial.forEach(([uid, k, v]) => insertConfigInitial.run(uid, k, v));
+
+db.exec(`
 
   CREATE TABLE IF NOT EXISTS rugs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,8 +126,8 @@ const initialBalances = [
   ['ethereum', 100.00],
   ['base', 100.00]
 ];
-const insertBalance = db.prepare('INSERT OR IGNORE INTO balances (chain, balance) VALUES (?, ?)');
-initialBalances.forEach(([chain, balance]) => insertBalance.run(chain, balance));
+const insertBalance = db.prepare('INSERT OR IGNORE INTO balances (user_id, chain, balance) VALUES (?, ?, ?)');
+initialBalances.forEach(([chain, balance]) => insertBalance.run(null, chain, balance));
 
 // Migration: Ensure users has created_at column
 try {
@@ -214,7 +228,7 @@ try {
 }
 
 // Seed default config
-const defaultConfig = [
+const defaultConfigGlobal = [
   ['scanning_active', 'true'],
   ['min_boost', '100'],
   ['min_nana_score', '70'],
@@ -229,8 +243,8 @@ const defaultConfig = [
   ['scanned_chains', 'solana,ethereum,base']
 ];
 
-const insertConfig = db.prepare('INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)');
-defaultConfig.forEach(([key, value]) => insertConfig.run(key, value));
+const insertConfigGlobal = db.prepare('INSERT OR IGNORE INTO config (user_id, key, value) VALUES (NULL, ?, ?)');
+defaultConfigGlobal.forEach(([key, value]) => insertConfigGlobal.run(key, value));
 
 // Neural Weights (initial)
 const initialWeights = [
@@ -665,6 +679,41 @@ function initBot() {
             await bot?.sendMessage(chatId, "👼 *Scanning Engine Resumed* 🟢");
             return;
           }
+
+          if (text === '/history') {
+            const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+            const history = db.prepare(`
+              SELECT symbol, ath_price, call_price, (ath_price / call_price) as multiplier 
+              FROM tokens 
+              WHERE created_at > ? 
+              ORDER BY multiplier DESC 
+              LIMIT 10
+            `).all(yesterday);
+
+            let msgText = `👼 *24h Call History (Top Performers)*\n\n`;
+            if (history.length === 0) {
+              msgText += "_No calls in the last 24 hours._";
+            } else {
+              history.forEach((t: any, i: number) => {
+                msgText += `${i+1}. *${t.symbol}* - ATH: $${t.ath_price.toFixed(6)} (${t.multiplier.toFixed(1)}x)\n`;
+              });
+            }
+            await bot?.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+            return;
+          }
+
+          if (text.startsWith('/config_group ')) {
+            const groupId = text.split(' ')[1];
+            if (!groupId) {
+              await bot?.sendMessage(chatId, "Usage: /config_group <group_id>");
+              return;
+            }
+            const user = db.prepare("SELECT user_id FROM config WHERE key = 'chat_id' AND value = ?").get(chatId.toString());
+            const userId = user ? user.user_id : null;
+            db.prepare("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?, ?, ?)").run(userId, 'telegram_group_id', groupId);
+            await bot?.sendMessage(chatId, `👼 *Telegram Group ID Set:* \`${groupId}\``, { parse_mode: 'Markdown' });
+            return;
+          }
         } catch (err) {
           console.error('[Telegram] Message Handler Error:', err);
         }
@@ -800,15 +849,20 @@ async function scanNewPairs() {
       // Telegram Alert for all users who have chat_id set
       if (bot) {
         const usersWithAlerts = db.prepare(`
-          SELECT c1.user_id, c1.value as chat_id 
+          SELECT c1.user_id, c1.value as chat_id, c3.value as group_id
           FROM config c1
           JOIN config c2 ON (c1.user_id = c2.user_id OR (c1.user_id IS NULL AND c2.user_id IS NULL))
+          LEFT JOIN config c3 ON (c1.user_id = c3.user_id AND c3.key = 'telegram_group_id')
           WHERE c1.key = 'chat_id' AND c2.key = 'alerts_enabled' AND c2.value = 'true'
         `).all();
 
         for (const u of usersWithAlerts) {
           try {
-            bot.sendMessage(u.chat_id, `🚀 *New Signal Detected!*\n\n*Token:* ${pair.baseToken.symbol}\n*Score:* ${nanaScore.toFixed(1)}\n*Chain:* ${chain}\n*Address:* \`${address}\`\n\n[DexScreener](${pair.url})`, { parse_mode: 'Markdown' });
+            const alertMsg = `🚀 *New Signal Detected!*\n\n*Token:* ${pair.baseToken.symbol}\n*Score:* ${nanaScore.toFixed(1)}\n*Chain:* ${chain}\n*Address:* \`${address}\`\n\n[DexScreener](${pair.url})`;
+            bot.sendMessage(u.chat_id, alertMsg, { parse_mode: 'Markdown' });
+            if (u.group_id) {
+              bot.sendMessage(u.group_id, alertMsg, { parse_mode: 'Markdown' });
+            }
           } catch (err) {
             console.error(`Failed to send Telegram alert to user ${u.user_id}:`, err);
           }
@@ -876,7 +930,7 @@ async function startServer() {
   app.post('/api/config', (req, res) => {
     const { key, value, userId } = req.body;
     // Keys that are per-user
-    const perUserKeys = ['chat_id', 'alerts_enabled'];
+    const perUserKeys = ['chat_id', 'alerts_enabled', 'telegram_group_id'];
     const targetUserId = perUserKeys.includes(key) ? userId : null;
     
     db.prepare('INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?, ?, ?)').run(targetUserId, key, String(value));
@@ -887,22 +941,46 @@ async function startServer() {
     const since = req.query.since as string;
     let tokens;
     if (since) {
-      tokens = db.prepare('SELECT * FROM tokens WHERE created_at >= ? ORDER BY created_at DESC LIMIT 50').all(since);
+      // If 'since' is provided, we still respect it but maybe cap it to 2 hours if it's too old?
+      // Actually, the user wants the live feed to clear every 2 hours.
+      // So let's just enforce the 2-hour limit for the live feed.
+      tokens = db.prepare("SELECT * FROM tokens WHERE created_at >= ? AND created_at > datetime('now', '-2 hours') ORDER BY created_at DESC LIMIT 50").all(since);
     } else {
-      // Default to last 24 hours for unauthenticated or fresh view
-      tokens = db.prepare("SELECT * FROM tokens WHERE created_at > datetime('now', '-24 hours') ORDER BY created_at DESC LIMIT 50").all();
+      // Default to last 2 hours for live feed
+      tokens = db.prepare("SELECT * FROM tokens WHERE created_at > datetime('now', '-2 hours') ORDER BY created_at DESC LIMIT 50").all();
     }
     res.json(tokens);
   });
 
   app.get('/api/tokens/history', (req, res) => {
-    const since = req.query.since as string;
-    let tokens;
-    if (since) {
-      tokens = db.prepare('SELECT * FROM tokens WHERE created_at >= ? ORDER BY created_at DESC').all(since);
-    } else {
-      tokens = db.prepare('SELECT * FROM tokens ORDER BY created_at DESC').all();
+    const { chain, winLoss, date, since } = req.query;
+    let query = 'SELECT * FROM tokens WHERE 1=1';
+    const params: any[] = [];
+
+    if (chain && chain !== 'all') {
+      query += ' AND chain = ?';
+      params.push(chain);
     }
+
+    if (winLoss === 'win') {
+      query += ' AND ath_price >= call_price * 2';
+    } else if (winLoss === 'loss') {
+      query += ' AND ath_price < call_price * 2';
+    }
+
+    if (date) {
+      query += ' AND date(created_at) = date(?)';
+      params.push(date);
+    }
+
+    if (since) {
+      query += ' AND created_at >= ?';
+      params.push(since);
+    }
+
+    query += ' ORDER BY created_at DESC';
+    
+    const tokens = db.prepare(query).all(...params);
     res.json(tokens);
   });
 
@@ -917,11 +995,14 @@ async function startServer() {
   });
 
   app.get('/api/stats', (req, res) => {
+    const { scope } = req.query;
+    const timeFilter = scope === 'history' ? "" : "WHERE created_at > datetime('now', '-24 hours')";
+    
     try {
-      const totalCalls = db.prepare('SELECT COUNT(*) as count FROM tokens').get()?.count || 0;
-      const avgSentiment = db.prepare('SELECT AVG(sentiment_score) as avg FROM tokens').get()?.avg || 0;
-      const explosive = db.prepare('SELECT COUNT(*) as count FROM tokens WHERE ath_price >= call_price * 5').get()?.count || 0;
-      const winners = db.prepare('SELECT COUNT(*) as count FROM tokens WHERE ath_price >= call_price * 2').get()?.count || 0;
+      const totalCalls = db.prepare(`SELECT COUNT(*) as count FROM tokens ${timeFilter}`).get()?.count || 0;
+      const avgSentiment = db.prepare(`SELECT AVG(sentiment_score) as avg FROM tokens ${timeFilter}`).get()?.avg || 0;
+      const explosive = db.prepare(`SELECT COUNT(*) as count FROM tokens ${timeFilter} ${timeFilter ? 'AND' : 'WHERE'} ath_price >= call_price * 5`).get()?.count || 0;
+      const winners = db.prepare(`SELECT COUNT(*) as count FROM tokens ${timeFilter} ${timeFilter ? 'AND' : 'WHERE'} ath_price >= call_price * 2`).get()?.count || 0;
       const winRate = totalCalls > 0 ? (winners / totalCalls) * 100 : 0;
       
       res.json({
@@ -1192,15 +1273,20 @@ async function startServer() {
     // Send Telegram Alert if enabled
     if (bot) {
       const usersWithAlerts = db.prepare(`
-        SELECT c1.user_id, c1.value as chat_id 
+        SELECT c1.user_id, c1.value as chat_id, c3.value as group_id
         FROM config c1
         JOIN config c2 ON (c1.user_id = c2.user_id OR (c1.user_id IS NULL AND c2.user_id IS NULL))
+        LEFT JOIN config c3 ON (c1.user_id = c3.user_id AND c3.key = 'telegram_group_id')
         WHERE c1.key = 'chat_id' AND c2.key = 'alerts_enabled' AND c2.value = 'true'
       `).all();
 
       for (const u of usersWithAlerts) {
         try {
-          bot.sendMessage(u.chat_id, `🚀 *New Signal Detected!*\n\n*Token:* ${mockToken.symbol}\n*Score:* ${mockToken.nana_score.toFixed(1)}\n*Chain:* ${mockToken.chain}\n*Address:* \`${mockToken.address}\`\n\n[DexScreener](https://dexscreener.com/${mockToken.chain}/${mockToken.address})`, { parse_mode: 'Markdown' });
+          const alertMsg = `🚀 *New Signal Detected!*\n\n*Token:* ${mockToken.symbol}\n*Score:* ${mockToken.nana_score.toFixed(1)}\n*Chain:* ${mockToken.chain}\n*Address:* \`${mockToken.address}\`\n\n[DexScreener](https://dexscreener.com/${mockToken.chain}/${mockToken.address})`;
+          bot.sendMessage(u.chat_id, alertMsg, { parse_mode: 'Markdown' });
+          if (u.group_id) {
+            bot.sendMessage(u.group_id, alertMsg, { parse_mode: 'Markdown' });
+          }
         } catch (err) {
           console.error(`Failed to send Telegram alert to user ${u.user_id}:`, err);
         }

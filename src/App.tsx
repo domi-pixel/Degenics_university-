@@ -82,6 +82,7 @@ interface Token {
 
 interface Config {
   chat_id: string;
+  telegram_group_id: string;
   alerts_enabled: string;
   scanning_active: string;
   scanned_chains: string;
@@ -151,6 +152,8 @@ export default function App() {
   const [insights, setInsights] = useState<any[]>([]);
   const [config, setConfig] = useState<Config | null>(null);
   const [stats, setStats] = useState({ totalCalls: 0, avgScore: 0, avgSentiment: 0, explosive: 0, winRate: 0, rugPrevention: 0 });
+  const [historyStats, setHistoryStats] = useState({ totalCalls: 0, avgScore: 0, avgSentiment: 0, explosive: 0, winRate: 0, rugPrevention: 0 });
+  const [performanceTokens, setPerformanceTokens] = useState<Token[]>([]);
   const [activeTab, setActiveTab] = useState<'live' | 'performance' | 'simulation' | 'social' | 'history' | 'config'>('live');
   const [hasAiKey, setHasAiKey] = useState(false);
   const [analyzingIds, setAnalyzingIds] = useState<Set<string>>(new Set());
@@ -202,8 +205,8 @@ export default function App() {
       for (let i = 0; i <= retries; i++) {
         try {
           const response = await ai.models.generateContent({
-            model: "gemini-3-flash-preview", 
-            contents: prompt,
+            model: options.useSearch || options.useUrl ? "gemini-3.1-pro-preview" : "gemini-3-flash-preview", 
+            contents: { parts: [{ text: prompt }] },
             config: { 
               responseMimeType: "application/json",
               tools: [
@@ -624,13 +627,15 @@ export default function App() {
         fetch(`/api/tokens${sinceParam}`),
         fetch(configUrl),
         fetch('/api/stats'),
+        fetch('/api/stats?scope=history'),
         fetch('/api/rugs'),
         fetch('/api/insights'),
         fetch(`/api/simulation/trades${userQueryOnly}`),
         fetch(`/api/simulation/stats${userQueryOnly}`),
         fetch(`/api/simulation/portfolio${userQueryOnly}`),
         fetch('/api/neural/weights'),
-        fetch(`/api/tokens/history${sinceParam}`)
+        fetch(`/api/tokens/history?since=${new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()}`), // For performance (24h)
+        fetch(`/api/tokens/history?chain=${historyChainFilter}&winLoss=${historyWinFilter}&date=${historyDateFilter}${sinceParam ? '&' + sinceParam.slice(1) : ''}`)
       ]);
 
       const safeJson = async (res: Response) => {
@@ -642,13 +647,14 @@ export default function App() {
         return null;
       };
 
-      const [tokensData, configData, statsData, rugsData, insightsData, simTradesData, simStatsData, portfolioData, weightsData, historyData] = await Promise.all(
+      const [tokensData, configData, statsData, historyStatsData, rugsData, insightsData, simTradesData, simStatsData, portfolioData, weightsData, performanceData, historyData] = await Promise.all(
         results.map(res => safeJson(res))
       );
 
       if (tokensData) setTokens(Array.isArray(tokensData) ? tokensData : []);
       if (configData) setConfig(configData);
       if (statsData) setStats(statsData);
+      if (historyStatsData) setHistoryStats(historyStatsData);
       if (rugsData) setRugs(Array.isArray(rugsData) ? rugsData : []);
       if (insightsData) setInsights(Array.isArray(insightsData) ? insightsData : []);
       if (simTradesData) setSimulationTrades(Array.isArray(simTradesData) ? simTradesData : []);
@@ -658,6 +664,7 @@ export default function App() {
         setPortfolioValue(portfolioData.totalValue || 0);
       }
       if (weightsData) setNeuralWeights(Array.isArray(weightsData) ? weightsData : []);
+      if (performanceData) setPerformanceTokens(Array.isArray(performanceData) ? performanceData : []);
       if (historyData && Array.isArray(historyData)) {
         setHistoryTokens(historyData);
         console.log(`[History] Loaded ${historyData.length} tokens.`);
@@ -682,7 +689,7 @@ export default function App() {
     fetchData();
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
-  }, [user]);
+  }, [user, historyChainFilter, historyWinFilter, historyDateFilter]);
 
   const updateConfig = async (key: string, value: string) => {
     // Optimistic update
@@ -1232,6 +1239,21 @@ export default function App() {
 
         {activeTab === 'history' && (
           <div className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <Card title="Total Calls (All Time)" icon={Database}>
+                <div className="text-2xl font-bold text-white">{historyStats.totalCalls}</div>
+                <div className="text-[10px] font-mono text-white/40 uppercase">Signals Recorded</div>
+              </Card>
+              <Card title="Neural Sentiment" icon={Brain}>
+                <div className="text-2xl font-bold text-emerald-400">{(historyStats.avgSentiment || 0).toFixed(1)}%</div>
+                <div className="text-[10px] font-mono text-white/40 uppercase">Average Bullishness</div>
+              </Card>
+              <Card title="Explosive Hits" icon={Zap}>
+                <div className="text-2xl font-bold text-amber-400">{historyStats.explosive}</div>
+                <div className="text-[10px] font-mono text-white/40 uppercase">5x+ Multipliers</div>
+              </Card>
+            </div>
+
             <Card title="Signal History" icon={History}>
               <div className="p-4 border-b border-white/5 bg-white/2 flex flex-wrap gap-4 items-end">
                 <div className="space-y-1">
@@ -1289,6 +1311,8 @@ export default function App() {
                       <th className="p-4 text-[10px] font-mono text-white/40 uppercase">Score</th>
                       <th className="p-4 text-[10px] font-mono text-white/40 uppercase">Security</th>
                       <th className="p-4 text-[10px] font-mono text-white/40 uppercase">Sentiment</th>
+                      <th className="p-4 text-[10px] font-mono text-white/40 uppercase">ATH</th>
+                      <th className="p-4 text-[10px] font-mono text-white/40 uppercase">Mult</th>
                       <th className="p-4 text-[10px] font-mono text-white/40 uppercase">Time</th>
                       <th className="p-4 text-[10px] font-mono text-white/40 uppercase">Action</th>
                     </tr>
@@ -1305,16 +1329,7 @@ export default function App() {
                       </tr>
                     )}
                     {(historyTokens || [])
-                      .filter(t => {
-                        if (historyChainFilter !== 'all' && t.chain !== historyChainFilter) return false;
-                        if (historyWinFilter === 'winners' && (t.ath_price / t.call_price) < 2) return false;
-                        if (historyWinFilter === 'losers' && (t.ath_price / t.call_price) >= 1.1) return false;
-                        if (historyDateFilter) {
-                          const date = new Date(t.created_at).toISOString().split('T')[0];
-                          if (date !== historyDateFilter) return false;
-                        }
-                        return true;
-                      })
+                      .sort((a, b) => (b.ath_price / b.call_price) - (a.ath_price / a.call_price))
                       .map((token, i) => (
                         <tr key={token.id || token.address || i} className="border-b border-white/2 hover:bg-white/2 transition-colors">
                         <td className="p-4">
@@ -1338,6 +1353,15 @@ export default function App() {
                           </Badge>
                         </td>
                         <td className="p-4 text-xs font-mono">{(token.sentiment_score || 0).toFixed(0)}%</td>
+                        <td className="p-4 text-[10px] font-mono text-white/60">${(token.ath_price || 0).toFixed(6)}</td>
+                        <td className="p-4">
+                          <span className={cn(
+                            "text-[10px] font-mono font-bold",
+                            (token.ath_price / token.call_price) >= 2 ? "text-emerald-400" : "text-white/40"
+                          )}>
+                            {(token.ath_price / token.call_price).toFixed(1)}x
+                          </span>
+                        </td>
                         <td className="p-4 text-[10px] font-mono text-white/40">
                           {formatDistanceToNow(token.created_at)} ago
                         </td>
@@ -1827,7 +1851,7 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/5">
-                      {tokens
+                      {performanceTokens
                         .filter(token => {
                           const chainMatch = historyChainFilter === 'all' || token.chain === historyChainFilter;
                           const winMatch = historyWinFilter === 'all' || 
@@ -2229,6 +2253,22 @@ export default function App() {
                       <Send className="w-3 h-3" />
                       Open Telegram Bot
                     </a>
+
+                    <div className="space-y-2 pt-2 border-t border-indigo-500/20">
+                      <label className="text-[10px] font-mono text-indigo-400 uppercase">Telegram Group ID</label>
+                      <div className="flex gap-2">
+                        <input 
+                          type="text"
+                          value={config.telegram_group_id || ''}
+                          onChange={(e) => updateConfig('telegram_group_id', e.target.value)}
+                          placeholder="-100..."
+                          className="flex-1 bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-[10px] font-mono text-white focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                      <p className="text-[8px] font-mono text-white/20 uppercase">
+                        Add the bot to your group and use /config_group or paste the ID here to receive group alerts.
+                      </p>
+                    </div>
                   </div>
 
                   <div className="space-y-2">

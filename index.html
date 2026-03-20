@@ -8,7 +8,7 @@
       // Safety guard for 'ethereum' property redefinition errors
       // This prevents conflicts between browser extensions and the preview environment
       try {
-        if (!window.ethereum) {
+        if (!Object.getOwnPropertyDescriptor(window, 'ethereum')) {
           Object.defineProperty(window, 'ethereum', {
             value: undefined,
             writable: true,
