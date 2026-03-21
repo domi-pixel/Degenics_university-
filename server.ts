@@ -375,27 +375,27 @@ function initBot() {
         if (text === '/commands' || text === '/help') {
           const help = `👼 *DEGENICS ANGEL COMMANDS*
 
-/status - Check system health and scanning state
-/performance - View win rate and ROI stats
-/portfolio - View your current simulation holdings
-/settings - View your current risk and profit settings
-/top - See top 5 tokens by Nana Score
-/recent - View the 5 most recent signals (alias: /signals)
-/filters - View current scanning parameters
-/insights - View latest AI learned patterns
-/learn <address> <reason> - Ingest a successful token for pattern learning
-/chatid - Get your Telegram User ID (alias: /id)
-/testalert - Test your alert connection (alias: /test)
-/setrisk <val> - Set risk tolerance (0.1 - 3.0)
-/setprofit <val> - Set profit target ROI (1.1 - 5.0)
-/buy <address> <amount> - Manual simulation buy (USD)
-/sell <address> <percent> - Manual simulation sell (%)
-/reset - Reset your simulation balances
-/pause - Pause the scanning engine
-/resume - Resume the scanning engine
-/history - View top 20 tokens by ATH performance
-/config_group <id> - Set your Telegram Group ID for alerts
-/commands - Show this list (alias: /help)`;
+\`/status\` - Check system health and scanning state
+\`/performance\` - View win rate and ROI stats
+\`/portfolio\` - View your current simulation holdings
+\`/settings\` - View your current risk and profit settings
+\`/top\` - See top 5 tokens by Nana Score
+\`/recent\` (alias: \`/signals\`) - View the 5 most recent signals
+\`/filters\` - View current scanning parameters
+\`/insights\` - View latest AI learned patterns
+\`/learn\` <address> <reason> - Ingest a successful token for pattern learning
+\`/chatid\` (alias: \`/id\`) - Get your Telegram User ID
+\`/testalert\` (alias: \`/test\`) - Test your alert connection
+\`/setrisk\` <val> - Set risk tolerance (0.1 - 3.0)
+\`/setprofit\` <val> - Set profit target ROI (1.1 - 5.0)
+\`/buy\` <address> <amount> - Manual simulation buy (USD)
+\`/sell\` <address> <percent> - Manual simulation sell (%)
+\`/reset\` - Reset your simulation balances
+\`/pause\` - Pause the scanning engine
+\`/resume\` - Resume the scanning engine
+\`/history\` - View top 20 tokens by ATH performance
+\`/config_group\` <id> - Set your Telegram Group ID for alerts
+\`/commands\` (alias: \`/help\`) - Show this list`;
           await bot?.sendMessage(chatId, help, { parse_mode: 'Markdown' });
           return;
         }
@@ -701,18 +701,23 @@ function initBot() {
 
           if (text === '/history') {
             const history = db.prepare(`
-              SELECT symbol, ath_price, call_price, (ath_price / call_price) as multiplier 
+              SELECT symbol, ath_price, call_price, 
+              CASE WHEN call_price > 0 THEN (ath_price / call_price) ELSE 1 END as multiplier 
               FROM tokens 
+              WHERE ath_price IS NOT NULL AND call_price IS NOT NULL
               ORDER BY multiplier DESC 
               LIMIT 20
             `).all();
 
+            console.log(`[Telegram] History requested. Found ${history.length} tokens.`);
+            
             let msgText = `👼 *Top 20 Signal History (Sorted by ATH)*\n\n`;
             if (history.length === 0) {
               msgText += "_No signals recorded yet._";
             } else {
               history.forEach((t: any, i: number) => {
-                msgText += `${i+1}. *${t.symbol}* - ATH: $${t.ath_price.toFixed(6)} (${t.multiplier.toFixed(1)}x)\n`;
+                const mult = t.multiplier || 1;
+                msgText += `${i+1}. *${t.symbol}* - ATH: $${(t.ath_price || 0).toFixed(6)} (${mult.toFixed(1)}x)\n`;
               });
             }
             await bot?.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
@@ -762,10 +767,16 @@ initBot();
 
 let lastScan = Date.now();
 
+let isScanning = false;
 // Background Scanning Logic
 async function scanNewPairs() {
+  if (isScanning) return;
+  isScanning = true;
   const isActive = db.prepare("SELECT value FROM config WHERE key = ?").get('scanning_active')?.value === 'true';
-  if (!isActive) return;
+  if (!isActive) {
+    isScanning = false;
+    return;
+  }
 
   lastScan = Date.now();
   console.log('[Scanner] Scanning for new pairs...');
@@ -866,7 +877,7 @@ async function scanNewPairs() {
       // Telegram Alert for all users who have chat_id set
       if (bot) {
         const usersWithAlerts = db.prepare(`
-          SELECT c1.user_id, c1.value as chat_id, c3.value as group_id
+          SELECT DISTINCT c1.value as chat_id, c3.value as group_id
           FROM config c1
           JOIN config c2 ON (c1.user_id = c2.user_id OR (c1.user_id IS NULL AND c2.user_id IS NULL))
           LEFT JOIN config c3 ON (c1.user_id = c3.user_id AND c3.key = 'telegram_group_id')
@@ -877,45 +888,54 @@ async function scanNewPairs() {
           try {
             const alertMsg = `🚀 *New Signal Detected!*\n\n*Token:* ${pair.baseToken.symbol}\n*Score:* ${nanaScore.toFixed(1)}\n*Chain:* ${chain}\n*Address:* \`${address}\`\n\n[DexScreener](${pair.url})`;
             bot.sendMessage(u.chat_id, alertMsg, { parse_mode: 'Markdown' });
-            if (u.group_id) {
+            if (u.group_id && u.group_id !== u.chat_id) {
               bot.sendMessage(u.group_id, alertMsg, { parse_mode: 'Markdown' });
             }
           } catch (err) {
-            console.error(`Failed to send Telegram alert to user ${u.user_id}:`, err);
+            console.error(`Failed to send Telegram alert to user:`, err);
           }
         }
       }
     }
   } catch (e) {
     console.error('[Scanner] Error:', e);
+  } finally {
+    isScanning = false;
   }
 }
 
+let isUpdatingPrices = false;
 async function updatePrices() {
-  const tokens = db.prepare('SELECT id, address, chain, current_price, ath_price FROM tokens ORDER BY created_at DESC LIMIT 20').all();
-  
-  for (const token of tokens) {
-    try {
-      const response = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${token.address}`);
-      const pairs = response.data.pairs || [];
-      const pair = pairs.find((p: any) => p.chainId === token.chain);
+  if (isUpdatingPrices) return;
+  isUpdatingPrices = true;
+  try {
+    const tokens = db.prepare('SELECT id, address, chain, current_price, ath_price FROM tokens ORDER BY created_at DESC LIMIT 20').all();
+    
+    for (const token of tokens) {
+      try {
+        const response = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${token.address}`);
+        const pairs = response.data.pairs || [];
+        const pair = pairs.find((p: any) => p.chainId === token.chain);
 
-      if (pair) {
-        const newPrice = parseFloat(pair.priceUsd);
-        const newAth = Math.max(token.ath_price, newPrice);
-        
-        db.prepare('UPDATE tokens SET current_price = ?, ath_price = ?, market_cap = ?, liquidity = ? WHERE id = ?')
-          .run(newPrice, newAth, pair.fdv || 0, pair.liquidity?.usd || 0, token.id);
+        if (pair) {
+          const newPrice = parseFloat(pair.priceUsd);
+          const newAth = Math.max(token.ath_price || 0, newPrice);
           
-        // Update portfolio prices too
-        db.prepare('UPDATE portfolio SET current_price = ?, total_value = quantity * ? WHERE address = ?')
-          .run(newPrice, newPrice, token.address);
+          db.prepare('UPDATE tokens SET current_price = ?, ath_price = ?, market_cap = ?, liquidity = ? WHERE id = ?')
+            .run(newPrice, newAth, pair.fdv || 0, pair.liquidity?.usd || 0, token.id);
+            
+          // Update portfolio prices too
+          db.prepare('UPDATE portfolio SET current_price = ?, total_value = quantity * ? WHERE address = ?')
+            .run(newPrice, newPrice, token.address);
+        }
+        // Small delay to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } catch (e) {
+        console.error(`[PriceUpdater] Error for ${token.address}:`, e);
       }
-      // Small delay to avoid rate limits
-      await new Promise(resolve => setTimeout(resolve, 500));
-    } catch (e) {
-      console.error(`[PriceUpdater] Error for ${token.address}:`, e);
     }
+  } finally {
+    isUpdatingPrices = false;
   }
 }
 
@@ -1290,7 +1310,7 @@ async function startServer() {
     // Send Telegram Alert if enabled
     if (bot) {
       const usersWithAlerts = db.prepare(`
-        SELECT c1.user_id, c1.value as chat_id, c3.value as group_id
+        SELECT DISTINCT c1.value as chat_id, c3.value as group_id
         FROM config c1
         JOIN config c2 ON (c1.user_id = c2.user_id OR (c1.user_id IS NULL AND c2.user_id IS NULL))
         LEFT JOIN config c3 ON (c1.user_id = c3.user_id AND c3.key = 'telegram_group_id')
@@ -1301,11 +1321,11 @@ async function startServer() {
         try {
           const alertMsg = `🚀 *New Signal Detected!*\n\n*Token:* ${mockToken.symbol}\n*Score:* ${mockToken.nana_score.toFixed(1)}\n*Chain:* ${mockToken.chain}\n*Address:* \`${mockToken.address}\`\n\n[DexScreener](https://dexscreener.com/${mockToken.chain}/${mockToken.address})`;
           bot.sendMessage(u.chat_id, alertMsg, { parse_mode: 'Markdown' });
-          if (u.group_id) {
+          if (u.group_id && u.group_id !== u.chat_id) {
             bot.sendMessage(u.group_id, alertMsg, { parse_mode: 'Markdown' });
           }
         } catch (err) {
-          console.error(`Failed to send Telegram alert to user ${u.user_id}:`, err);
+          console.error(`Failed to send Telegram alert to user:`, err);
         }
       }
     }
@@ -1389,7 +1409,10 @@ async function startServer() {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 
+  let isUpdatingATH = false;
   async function updateATHPrices() {
+    if (isUpdatingATH) return;
+    isUpdatingATH = true;
     console.log('[Scanner] Updating ATH prices...');
     try {
       const tokens = db.prepare("SELECT id, address, chain, ath_price, call_price, symbol, alert_2x_sent, alert_5x_sent, alert_20x_sent FROM tokens WHERE created_at > datetime('now', '-48 hours')").all();
@@ -1401,7 +1424,8 @@ async function startServer() {
           
           if (pair) {
             const currentPrice = parseFloat(pair.priceUsd);
-            const multiplier = currentPrice / token.call_price;
+            const callPrice = token.call_price || currentPrice || 0.00000001; // Avoid division by zero
+            const multiplier = currentPrice / callPrice;
             
             // Check for milestones
             let milestoneReached = 0;
@@ -1422,11 +1446,11 @@ async function startServer() {
             }
 
             if (milestoneReached > 0 && bot) {
-              const winMsg = `${milestoneText}\n\n*Token:* ${token.symbol}\n*Multiplier:* ${multiplier.toFixed(2)}x\n*Current Price:* $${currentPrice.toFixed(8)}\n*Call Price:* $${token.call_price.toFixed(8)}\n\n[DexScreener](https://dexscreener.com/${token.chain}/${token.address})`;
+              const winMsg = `${milestoneText}\n\n*Token:* ${token.symbol}\n*Multiplier:* ${multiplier.toFixed(2)}x\n*Current Price:* $${currentPrice.toFixed(8)}\n*Call Price:* $${callPrice.toFixed(8)}\n\n[DexScreener](https://dexscreener.com/${token.chain}/${token.address})`;
               
               // Send to all users with alerts enabled
               const users = db.prepare(`
-                SELECT c1.value as chat_id, c2.value as group_id 
+                SELECT DISTINCT c1.value as chat_id, c2.value as group_id 
                 FROM config c1 
                 LEFT JOIN config c2 ON c1.user_id = c2.user_id AND c2.key = 'telegram_group_id'
                 WHERE c1.key = 'chat_id' AND EXISTS (
@@ -1438,13 +1462,13 @@ async function startServer() {
                 if (u.chat_id) {
                   bot.sendMessage(u.chat_id, winMsg, { parse_mode: 'Markdown' }).catch(() => {});
                 }
-                if (u.group_id) {
+                if (u.group_id && u.group_id !== u.chat_id) {
                   bot.sendMessage(u.group_id, winMsg, { parse_mode: 'Markdown' }).catch(() => {});
                 }
               }
             }
 
-            if (currentPrice > token.ath_price) {
+            if (currentPrice > (token.ath_price || 0)) {
               db.prepare('UPDATE tokens SET ath_price = ?, current_price = ? WHERE id = ?').run(currentPrice, currentPrice, token.id);
             } else {
               db.prepare('UPDATE tokens SET current_price = ? WHERE id = ?').run(currentPrice, token.id);
@@ -1458,6 +1482,8 @@ async function startServer() {
       }
     } catch (e) {
       console.error('Failed to update ATH prices:', e);
+    } finally {
+      isUpdatingATH = false;
     }
   }
 
