@@ -372,7 +372,7 @@ function initBot() {
             return;
           }
 
-        if (text === '/commands') {
+        if (text === '/commands' || text === '/help') {
           const help = `👼 *DEGENICS ANGEL COMMANDS*
 
 /status - Check system health and scanning state
@@ -380,12 +380,12 @@ function initBot() {
 /portfolio - View your current simulation holdings
 /settings - View your current risk and profit settings
 /top - See top 5 tokens by Nana Score
-/recent - View the 5 most recent signals
+/recent - View the 5 most recent signals (alias: /signals)
 /filters - View current scanning parameters
 /insights - View latest AI learned patterns
 /learn <address> <reason> - Ingest a successful token for pattern learning
-/chatid - Get your Telegram User ID
-/testalert - Test your alert connection
+/chatid - Get your Telegram User ID (alias: /id)
+/testalert - Test your alert connection (alias: /test)
 /setrisk <val> - Set risk tolerance (0.1 - 3.0)
 /setprofit <val> - Set profit target ROI (1.1 - 5.0)
 /buy <address> <amount> - Manual simulation buy (USD)
@@ -393,14 +393,14 @@ function initBot() {
 /reset - Reset your simulation balances
 /pause - Pause the scanning engine
 /resume - Resume the scanning engine
-/history - View the last 20 tokens that were called
+/history - View top 20 tokens by ATH performance
 /config_group <id> - Set your Telegram Group ID for alerts
-/commands - Show this list`;
+/commands - Show this list (alias: /help)`;
           await bot?.sendMessage(chatId, help, { parse_mode: 'Markdown' });
           return;
         }
 
-        if (text === '/chatid') {
+        if (text === '/chatid' || text === '/id') {
           await bot?.sendMessage(chatId, `Your Chat ID is: \`${chatId}\``, { parse_mode: 'Markdown' });
           return;
         }
@@ -607,7 +607,7 @@ function initBot() {
             return;
           }
 
-          if (text === '/recent') {
+          if (text === '/recent' || text === '/signals') {
             const recentTokens = db.prepare("SELECT symbol, nana_score, created_at FROM tokens ORDER BY created_at DESC LIMIT 5").all();
             let msgText = `👼 *5 Most Recent Signals*\n\n`;
             recentTokens.forEach((t: any, i: number) => {
@@ -656,7 +656,7 @@ function initBot() {
             return;
           }
 
-          if (text === '/testalert') {
+          if (text === '/testalert' || text === '/test') {
             await bot?.sendMessage(chatId, "👼 *Alert Test*\n\nYour connection is active. You will receive signals here.", { parse_mode: 'Markdown' });
             return;
           }
@@ -703,11 +703,11 @@ function initBot() {
             const history = db.prepare(`
               SELECT symbol, ath_price, call_price, (ath_price / call_price) as multiplier 
               FROM tokens 
-              ORDER BY created_at DESC 
+              ORDER BY multiplier DESC 
               LIMIT 20
             `).all();
 
-            let msgText = `👼 *Last 20 Signal History*\n\n`;
+            let msgText = `👼 *Top 20 Signal History (Sorted by ATH)*\n\n`;
             if (history.length === 0) {
               msgText += "_No signals recorded yet._";
             } else {
