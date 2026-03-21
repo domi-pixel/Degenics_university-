@@ -26,7 +26,9 @@ import {
   Globe,
   Key,
   History,
-  Save
+  Save,
+  Menu,
+  X
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import { motion, AnimatePresence } from 'motion/react';
@@ -161,6 +163,7 @@ export default function App() {
   const [aiQuotaExhausted, setAiQuotaExhausted] = useState(false);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // --- AI Analysis Logic (Frontend Only) ---
   const getAI = () => {
@@ -843,21 +846,21 @@ export default function App() {
     <div className="min-h-screen bg-[#0a0a0c] text-white font-sans selection:bg-emerald-500/30">
       {/* Header */}
       <header className="border-b border-white/5 bg-[#0a0a0c]/80 backdrop-blur-xl sticky top-0 z-50">
-        <div className="max-w-[1600px] mx-auto px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-emerald-500 rounded-lg flex items-center justify-center shadow-[0_0_20px_rgba(16,185,129,0.3)]">
-              <Shield className="w-6 h-6 text-black" />
+        <div className="max-w-[1600px] mx-auto px-4 md:px-6 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-2 md:gap-3">
+            <div className="w-8 h-8 md:w-10 md:h-10 bg-emerald-500 rounded-lg flex items-center justify-center shadow-[0_0_20px_rgba(16,185,129,0.3)]">
+              <Shield className="w-5 h-5 md:w-6 md:h-6 text-black" />
             </div>
             <div>
-              <h1 className="text-lg font-bold tracking-tighter uppercase italic">Degenics Angel</h1>
+              <h1 className="text-sm md:text-lg font-bold tracking-tighter uppercase italic">Degenics Angel</h1>
               <div className="flex items-center gap-2">
-                <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                <span className="text-[10px] font-mono text-white/40 uppercase tracking-widest">On-Chain Intelligence v2.1</span>
+                <span className="w-1 h-1 md:w-1.5 md:h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                <span className="text-[8px] md:text-[10px] font-mono text-white/40 uppercase tracking-widest">On-Chain Intelligence v2.1</span>
               </div>
             </div>
           </div>
 
-          <nav className="flex items-center gap-1 bg-white/5 p-1 rounded-lg">
+          <nav className="hidden xl:flex items-center gap-1 bg-white/5 p-1 rounded-lg">
             {(['live', 'performance', 'simulation', 'social', 'history', 'config'] as const).map((tab) => (
               <button
                 key={tab}
@@ -885,34 +888,34 @@ export default function App() {
             ))}
           </nav>
 
-            <div className="flex items-center gap-4">
-              <div className="hidden lg:flex items-center gap-2 px-3 py-1.5 bg-white/2 rounded-lg border border-white/5">
+            <div className="flex items-center gap-2 md:gap-4">
+              <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-white/2 rounded-lg border border-white/5">
                 <div className={cn(
                   "w-1.5 h-1.5 rounded-full animate-pulse",
                   config?.scanning_active === 'true' ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" : "bg-red-500"
                 )} />
                 <span className="text-[10px] font-mono uppercase text-white/40">
-                  Heartbeat: {lastScanTime}
+                  {lastScanTime}
                 </span>
               </div>
               <button 
                 onClick={toggleScanning}
               className={cn(
-                "px-3 py-1.5 rounded-lg text-[10px] font-mono uppercase font-bold transition-all flex items-center gap-2",
+                "px-2 md:px-3 py-1.5 rounded-lg text-[10px] font-mono uppercase font-bold transition-all flex items-center gap-2",
                 config?.scanning_active === 'true' 
                   ? "bg-rose-500/10 text-rose-400 border border-rose-500/20 hover:bg-rose-500/20" 
                   : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20"
               )}
             >
               {config?.scanning_active === 'true' ? (
-                <><XCircle className="w-3 h-3" /> Pause Bot</>
+                <><XCircle className="w-3 h-3" /><span className="hidden sm:inline">Pause Bot</span></>
               ) : (
-                <><Activity className="w-3 h-3" /> Start Bot</>
+                <><Activity className="w-3 h-3" /><span className="hidden sm:inline">Start Bot</span></>
               )}
             </button>
 
             {user ? (
-              <div className="flex items-center gap-2 bg-white/5 px-3 py-1.5 rounded-lg border border-white/10">
+              <div className="hidden sm:flex items-center gap-2 bg-white/5 px-3 py-1.5 rounded-lg border border-white/10">
                 <div className="w-2 h-2 bg-emerald-500 rounded-full" />
                 <span className="text-[10px] font-mono text-white/60 uppercase">{user.email.split('@')[0]}</span>
                 <button 
@@ -925,34 +928,89 @@ export default function App() {
             ) : (
               <button 
                 onClick={() => { setAuthMode('login'); setShowAuthModal(true); }}
-                className="px-4 py-1.5 bg-white text-black rounded-lg text-xs font-bold hover:bg-white/90 transition-all"
+                className="px-3 md:px-4 py-1.5 bg-white text-black rounded-lg text-xs font-bold hover:bg-white/90 transition-all"
               >
                 Sign In
               </button>
             )}
 
-            <button onClick={fetchData} className="p-2 hover:bg-white/5 rounded-lg transition-colors">
+            <button onClick={fetchData} className="p-2 hover:bg-white/5 rounded-lg transition-colors hidden sm:block">
               <RefreshCw className="w-4 h-4 text-white/40" />
             </button>
+            
             <button 
-              onClick={async () => {
-                try {
-                  const res = await fetch('/api/scan', { method: 'POST' });
-                  if (res.ok) fetchData();
-                } catch (e) {
-                  console.error("Manual scan failed:", e);
-                }
-              }}
-              className="p-2 hover:bg-white/5 rounded-lg transition-colors group"
-              title="Force Manual Scan"
+              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+              className="xl:hidden p-2 hover:bg-white/5 rounded-lg transition-colors"
             >
-              <Search className="w-4 h-4 text-white/40 group-hover:text-emerald-400" />
+              {isMobileMenuOpen ? <X className="w-5 h-5 text-white" /> : <Menu className="w-5 h-5 text-white" />}
             </button>
           </div>
         </div>
+
+        {/* Mobile Menu */}
+        <AnimatePresence>
+          {isMobileMenuOpen && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              className="xl:hidden border-t border-white/5 bg-[#0a0a0c] overflow-hidden"
+            >
+              <div className="p-4 space-y-2">
+                {(['live', 'performance', 'simulation', 'social', 'history', 'config'] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    onClick={() => {
+                      if (tab !== 'live' && !user) {
+                        setAuthMode('login');
+                        setShowAuthModal(true);
+                        setIsMobileMenuOpen(false);
+                        return;
+                      }
+                      setActiveTab(tab);
+                      setIsMobileMenuOpen(false);
+                    }}
+                    className={cn(
+                      "w-full px-4 py-3 rounded-xl text-sm font-mono uppercase tracking-wider transition-all flex items-center justify-between",
+                      activeTab === tab ? "bg-emerald-500 text-black font-bold" : "bg-white/5 text-white/60 hover:text-white/80",
+                      tab !== 'live' && !user && "opacity-50"
+                    )}
+                  >
+                    {tab}
+                    {tab !== 'live' && !user && <Lock className="w-4 h-4" />}
+                  </button>
+                ))}
+                
+                {user && (
+                  <button 
+                    onClick={() => { setUser(null); localStorage.removeItem('degenics_user'); setIsMobileMenuOpen(false); }}
+                    className="w-full px-4 py-3 rounded-xl text-sm font-mono uppercase tracking-wider bg-rose-500/10 text-rose-400 border border-rose-500/20 mt-4"
+                  >
+                    Logout
+                  </button>
+                )}
+                
+                <div className="pt-4 border-t border-white/5 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className={cn(
+                      "w-1.5 h-1.5 rounded-full animate-pulse",
+                      config?.scanning_active === 'true' ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" : "bg-red-500"
+                    )} />
+                    <span className="text-[10px] font-mono uppercase text-white/40">
+                      Heartbeat: {lastScanTime}
+                    </span>
+                  </div>
+                  <button onClick={fetchData} className="p-2 bg-white/5 rounded-lg">
+                    <RefreshCw className="w-4 h-4 text-white/40" />
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </header>
 
-      <main className="max-w-[1600px] mx-auto px-6 py-8">
+      <main className="max-w-[1600px] mx-auto px-4 md:px-6 py-6 md:py-8">
         {aiQuotaExhausted && (
           <div className="mb-8 p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-center justify-between animate-pulse">
             <div className="flex items-center gap-3">
@@ -1011,11 +1069,11 @@ export default function App() {
 
         {activeTab === 'simulation' && (
           <div className="space-y-6">
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
               <Card className="bg-gradient-to-br from-emerald-500/5 to-transparent relative group">
                 <p className="text-[10px] font-mono text-white/40 uppercase mb-1">Total Simulation Profit</p>
                 <h3 className={cn(
-                  "text-3xl font-bold tracking-tighter",
+                  "text-2xl md:text-3xl font-bold tracking-tighter",
                   (simulationStats?.totalProfit || 0) >= 0 ? "text-emerald-400" : "text-red-400"
                 )}>
                   {(simulationStats?.totalProfit || 0) >= 0 ? '+' : ''}${(simulationStats?.totalProfit || 0).toFixed(2)}
@@ -1038,7 +1096,7 @@ export default function App() {
               </Card>
               <Card className="bg-gradient-to-br from-indigo-500/5 to-transparent">
                 <p className="text-[10px] font-mono text-white/40 uppercase mb-1">Portfolio Value</p>
-                <h3 className="text-3xl font-bold tracking-tighter text-indigo-400">
+                <h3 className="text-2xl md:text-3xl font-bold tracking-tighter text-indigo-400">
                   ${(portfolioValue || 0).toFixed(2)}
                 </h3>
               </Card>
@@ -1054,8 +1112,8 @@ export default function App() {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               <div className="lg:col-span-2 space-y-6">
                 <Card title="Current Portfolio" icon={Wallet}>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
+                  <div className="overflow-x-auto -mx-4 px-4">
+                    <table className="w-full text-left border-collapse min-w-[600px]">
                       <thead>
                         <tr className="border-b border-white/5">
                           <th className="py-3 px-4 text-[10px] font-mono text-white/30 uppercase">Token</th>
@@ -1114,8 +1172,8 @@ export default function App() {
                 </Card>
 
                 <Card title="Simulation Trade History" icon={TrendingUp}>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
+                  <div className="overflow-x-auto -mx-4 px-4">
+                    <table className="w-full text-left border-collapse min-w-[700px]">
                       <thead>
                         <tr className="border-b border-white/5">
                           <th className="py-3 px-4 text-[10px] font-mono text-white/30 uppercase">Time</th>
@@ -1239,29 +1297,29 @@ export default function App() {
 
         {activeTab === 'history' && (
           <div className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               <Card title="Total Calls (All Time)" icon={Database}>
-                <div className="text-2xl font-bold text-white">{historyStats.totalCalls}</div>
+                <div className="text-xl md:text-2xl font-bold text-white">{historyStats.totalCalls}</div>
                 <div className="text-[10px] font-mono text-white/40 uppercase">Signals Recorded</div>
               </Card>
               <Card title="Neural Sentiment" icon={Brain}>
-                <div className="text-2xl font-bold text-emerald-400">{(historyStats.avgSentiment || 0).toFixed(1)}%</div>
+                <div className="text-xl md:text-2xl font-bold text-emerald-400">{(historyStats.avgSentiment || 0).toFixed(1)}%</div>
                 <div className="text-[10px] font-mono text-white/40 uppercase">Average Bullishness</div>
               </Card>
               <Card title="Explosive Hits" icon={Zap}>
-                <div className="text-2xl font-bold text-amber-400">{historyStats.explosive}</div>
+                <div className="text-xl md:text-2xl font-bold text-amber-400">{historyStats.explosive}</div>
                 <div className="text-[10px] font-mono text-white/40 uppercase">5x+ Multipliers</div>
               </Card>
             </div>
 
             <Card title="Signal History" icon={History}>
               <div className="p-4 border-b border-white/5 bg-white/2 flex flex-wrap gap-4 items-end">
-                <div className="space-y-1">
+                <div className="space-y-1 flex-1 min-w-[120px]">
                   <label className="text-[10px] font-mono text-white/40 uppercase">Chain</label>
                   <select 
                     value={historyChainFilter}
                     onChange={(e) => setHistoryChainFilter(e.target.value)}
-                    className="bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-[10px] font-mono text-white focus:outline-none focus:border-indigo-500 uppercase"
+                    className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-[10px] font-mono text-white focus:outline-none focus:border-indigo-500 uppercase"
                   >
                     <option value="all">All Chains</option>
                     <option value="solana">Solana</option>
@@ -1270,25 +1328,25 @@ export default function App() {
                     <option value="bsc">BSC</option>
                   </select>
                 </div>
-                <div className="space-y-1">
+                <div className="space-y-1 flex-1 min-w-[120px]">
                   <label className="text-[10px] font-mono text-white/40 uppercase">Performance</label>
                   <select 
                     value={historyWinFilter}
                     onChange={(e) => setHistoryWinFilter(e.target.value as any)}
-                    className="bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-[10px] font-mono text-white focus:outline-none focus:border-indigo-500 uppercase"
+                    className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-[10px] font-mono text-white focus:outline-none focus:border-indigo-500 uppercase"
                   >
                     <option value="all">All Signals</option>
                     <option value="winners">Winners (2x+)</option>
                     <option value="losers">Losers (&lt;1.1x)</option>
                   </select>
                 </div>
-                <div className="space-y-1">
-                  <label className="text-[10px] font-mono text-white/40 uppercase">Date (YYYY-MM-DD)</label>
+                <div className="space-y-1 flex-1 min-w-[120px]">
+                  <label className="text-[10px] font-mono text-white/40 uppercase">Date</label>
                   <input 
                     type="date"
                     value={historyDateFilter}
                     onChange={(e) => setHistoryDateFilter(e.target.value)}
-                    className="bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-[10px] font-mono text-white focus:outline-none focus:border-indigo-500"
+                    className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-[10px] font-mono text-white focus:outline-none focus:border-indigo-500"
                   />
                 </div>
                 <button 
@@ -1302,8 +1360,8 @@ export default function App() {
                   Reset
                 </button>
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
+              <div className="overflow-x-auto -mx-4 px-4">
+                <table className="w-full text-left border-collapse min-w-[800px]">
                   <thead>
                     <tr className="border-b border-white/5">
                       <th className="p-4 text-[10px] font-mono text-white/40 uppercase">Token</th>
@@ -1391,7 +1449,7 @@ export default function App() {
                 <p className="text-sm text-white/60 leading-relaxed">
                   Join the most advanced intelligence network in the trenches. Follow our official channels for updates, community calls, and neural engine insights.
                 </p>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <a 
                     href="https://x.com/degenic_uni?s=20" 
                     target="_blank" 
@@ -1422,49 +1480,49 @@ export default function App() {
           </div>
         )}
         {activeTab === 'live' && (
-          <div className="grid grid-cols-12 gap-6">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 md:gap-6">
             {/* Stats Overview */}
-            <div className="col-span-12 grid grid-cols-4 gap-6 mb-2">
+            <div className="col-span-12 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 mb-2">
               <Card className="bg-gradient-to-br from-emerald-500/5 to-transparent">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-[10px] font-mono text-white/40 uppercase mb-1">Total Calls</p>
-                    <h3 className="text-3xl font-bold tracking-tighter">{stats.totalCalls}</h3>
+                    <h3 className="text-2xl md:text-3xl font-bold tracking-tighter">{stats.totalCalls}</h3>
                   </div>
-                  <Target className="w-8 h-8 text-emerald-500/20" />
+                  <Target className="w-6 h-6 md:w-8 md:h-8 text-emerald-500/20" />
                 </div>
               </Card>
               <Card className="bg-gradient-to-br from-indigo-500/5 to-transparent">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-[10px] font-mono text-white/40 uppercase mb-1">Neural Sentiment</p>
-                    <h3 className="text-3xl font-bold tracking-tighter">{(stats.avgSentiment || 0).toFixed(1)}%</h3>
+                    <h3 className="text-2xl md:text-3xl font-bold tracking-tighter">{(stats.avgSentiment || 0).toFixed(1)}%</h3>
                   </div>
-                  <Globe className="w-8 h-8 text-indigo-500/20" />
+                  <Globe className="w-6 h-6 md:w-8 md:h-8 text-indigo-500/20" />
                 </div>
               </Card>
               <Card className="bg-gradient-to-br from-amber-500/5 to-transparent">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-[10px] font-mono text-white/40 uppercase mb-1">Explosive Hits (5x+)</p>
-                    <h3 className="text-3xl font-bold tracking-tighter">{stats.explosive}</h3>
+                    <p className="text-[10px] font-mono text-white/40 uppercase mb-1">Explosive Hits</p>
+                    <h3 className="text-2xl md:text-3xl font-bold tracking-tighter">{stats.explosive}</h3>
                   </div>
-                  <Zap className="w-8 h-8 text-amber-500/20" />
+                  <Zap className="w-6 h-6 md:w-8 md:h-8 text-amber-500/20" />
                 </div>
               </Card>
               <Card className="bg-gradient-to-br from-rose-500/5 to-transparent">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-[10px] font-mono text-white/40 uppercase mb-1">Rug Prevention</p>
-                    <h3 className="text-3xl font-bold tracking-tighter">{stats.rugPrevention}%</h3>
+                    <h3 className="text-2xl md:text-3xl font-bold tracking-tighter">{stats.rugPrevention}%</h3>
                   </div>
-                  <Shield className="w-8 h-8 text-rose-500/20" />
+                  <Shield className="w-6 h-6 md:w-8 md:h-8 text-rose-500/20" />
                 </div>
               </Card>
             </div>
 
             {/* Live Feed */}
-            <div className="col-span-8">
+            <div className="col-span-12 lg:col-span-8">
               <Card 
                 title={
                   <div className="flex items-center gap-2">
@@ -1485,40 +1543,40 @@ export default function App() {
                         initial={{ opacity: 0, y: 20 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.95 }}
-                        className="group bg-white/2 hover:bg-white/[0.04] border border-white/5 rounded-xl p-4 transition-all"
+                        className="group bg-white/2 hover:bg-white/[0.04] border border-white/5 rounded-xl p-3 md:p-4 transition-all"
                       >
-                        <div className="flex items-start justify-between">
-                          <div className="flex gap-4">
-                            <div className="w-12 h-12 bg-white/5 rounded-lg flex items-center justify-center text-xl font-bold">
+                        <div className="flex flex-col sm:flex-row items-start justify-between gap-4">
+                          <div className="flex gap-3 md:gap-4 w-full sm:w-auto">
+                            <div className="w-10 h-10 md:w-12 md:h-12 bg-white/5 rounded-lg flex items-center justify-center text-lg font-bold flex-shrink-0">
                               {token.symbol[0]}
                             </div>
-                            <div>
-                              <div className="flex items-center gap-2 mb-1">
-                                <h4 className="font-bold text-lg leading-none">{token.symbol}</h4>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                <h4 className="font-bold text-base md:text-lg leading-none truncate">{token.symbol}</h4>
                                 <Badge variant={token.cto_status ? 'success' : 'default'}>
                                   {token.cto_status ? 'CTO' : 'DEV'}
                                 </Badge>
                                 <span className="text-[10px] font-mono text-white/30 uppercase">{token.chain}</span>
                               </div>
-                              <p className="text-xs text-white/40 font-mono truncate max-w-[200px]">{token.address}</p>
+                              <p className="text-[10px] md:text-xs text-white/40 font-mono truncate max-w-full sm:max-w-[200px]">{token.address}</p>
                             </div>
                           </div>
 
-                          <div className="flex gap-8 text-right">
-                            <div>
+                          <div className="flex flex-wrap sm:flex-nowrap gap-4 md:gap-8 text-left sm:text-right w-full sm:w-auto">
+                            <div className="flex-1 sm:flex-none">
                               <p className="text-[10px] font-mono text-white/30 uppercase mb-1">Current Price</p>
-                              <div className="flex items-center gap-1.5">
+                              <div className="flex items-center sm:justify-end gap-1.5">
                                 <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                                <p className="font-bold text-white">${(token.current_price || 0).toFixed(8)}</p>
+                                <p className="font-bold text-white text-xs md:text-base">${(token.current_price || 0).toFixed(8)}</p>
                               </div>
                             </div>
-                            <div>
+                            <div className="flex-1 sm:flex-none">
                               <p className="text-[10px] font-mono text-white/30 uppercase mb-1">Call Price</p>
-                              <p className="font-bold text-white/60">${(token.call_price || 0).toFixed(8)}</p>
+                              <p className="font-bold text-white/60 text-xs md:text-base sm:text-right">${(token.call_price || 0).toFixed(8)}</p>
                             </div>
-                            <div>
-                              <p className="text-[10px] font-mono text-white/30 uppercase mb-1">Nana Score</p>
-                              <div className="flex items-center gap-2">
+                            <div className="w-full sm:w-auto">
+                              <p className="text-[10px] font-mono text-white/30 uppercase mb-1 sm:text-right">Nana Score</p>
+                              <div className="flex items-center sm:justify-end gap-2">
                                 <div className="w-12 h-1.5 bg-white/10 rounded-full overflow-hidden">
                                   <div 
                                     className={cn(
@@ -1534,12 +1592,12 @@ export default function App() {
                           </div>
                         </div>
 
-                        <div className="mt-4 pt-4 border-t border-white/5 grid grid-cols-3 gap-4">
+                        <div className="mt-4 pt-4 border-t border-white/5 grid grid-cols-2 sm:grid-cols-3 gap-3 md:gap-4">
                           <div className="flex items-center gap-1.5">
                             <TrendingUp className="w-3 h-3 text-emerald-400" />
                             <span className="text-[10px] font-mono text-white/60 uppercase">ATH: {token.call_price ? (token.ath_price / token.call_price).toFixed(2) : '0.00'}x</span>
                             {token.ath_price >= token.call_price * 2 && (
-                              <Badge variant="success">2X HIT</Badge>
+                              <Badge variant="success">2X</Badge>
                             )}
                           </div>
                           <div className="flex items-center gap-1.5">
@@ -1552,20 +1610,20 @@ export default function App() {
                           </div>
                           <div className="flex items-center gap-1.5">
                             <AlertTriangle className="w-3 h-3 text-rose-400" />
-                            <span className="text-[10px] font-mono text-white/60 uppercase">Rug Risk: {(token.rug_risk_score || 0).toFixed(0)}%</span>
+                            <span className="text-[10px] font-mono text-white/60 uppercase truncate">Risk: {(token.rug_risk_score || 0).toFixed(0)}%</span>
                             {token.ai_rug_risk_level && (
                               <Badge variant={token.ai_rug_risk_level === 'LOW' ? 'success' : token.ai_rug_risk_level === 'MEDIUM' ? 'warning' : 'danger'}>
-                                {token.ai_rug_risk_level}
+                                {token.ai_rug_risk_level[0]}
                               </Badge>
                             )}
                           </div>
                           <div className="flex items-center gap-1.5">
                             <Ghost className="w-3 h-3 text-indigo-400" />
-                            <span className="text-[10px] font-mono text-white/60 uppercase">Insider: {(token.insider_probability || 0).toFixed(0)}%</span>
+                            <span className="text-[10px] font-mono text-white/60 uppercase truncate">Insider: {(token.insider_probability || 0).toFixed(0)}%</span>
                           </div>
                           <div className="flex items-center gap-1.5">
                             <Users className="w-3 h-3 text-sky-400" />
-                            <span className="text-[10px] font-mono text-white/60 uppercase">Sentiment: {(token.sentiment_score || 0).toFixed(0)}%</span>
+                            <span className="text-[10px] font-mono text-white/60 uppercase truncate">Sent: {(token.sentiment_score || 0).toFixed(0)}%</span>
                           </div>
                         </div>
 
@@ -1646,7 +1704,7 @@ export default function App() {
             </div>
 
             {/* Sidebar */}
-            <div className="col-span-4 space-y-6">
+            <div className="lg:col-span-4 space-y-6">
               <Card title="Learning Insights" icon={Cpu}>
                 <div className="space-y-3">
                   {(insights || []).length > 0 ? (insights || []).map((insight, i) => (
@@ -1734,7 +1792,7 @@ export default function App() {
         {activeTab === 'performance' && (
           user ? (
             <div className="space-y-6">
-              <div className="grid grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <Card title="Win Rate" className="col-span-1">
                   <div className="flex flex-col items-center justify-center py-8">
                     <div className="relative w-32 h-32 flex items-center justify-center">
@@ -1752,10 +1810,10 @@ export default function App() {
                       </svg>
                       <span className="absolute text-3xl font-bold">{(stats.winRate || 0).toFixed(1)}%</span>
                     </div>
-                    <p className="mt-4 text-[10px] font-mono text-white/40 uppercase tracking-widest">Calls reaching 2x+</p>
+                    <p className="mt-4 text-[10px] font-mono text-white/40 uppercase tracking-widest text-center">Calls reaching 2x+</p>
                   </div>
                 </Card>
-                <Card title="Volume Acceleration" className="col-span-2">
+                <Card title="Volume Acceleration" className="lg:col-span-2">
                   <div className="h-[200px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
                       <AreaChart data={[
@@ -1786,7 +1844,7 @@ export default function App() {
               </div>
 
               <Card title="Call History & ATH Tracking">
-                <div className="mb-6 grid grid-cols-4 gap-4 p-4 bg-white/2 rounded-lg border border-white/5">
+                <div className="mb-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 p-4 bg-white/2 rounded-lg border border-white/5">
                   <div className="space-y-1.5">
                     <label className="text-[10px] font-mono text-white/30 uppercase">Chain Filter</label>
                     <select 
@@ -1836,8 +1894,8 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
+                <div className="overflow-x-auto -mx-4 px-4">
+                  <table className="w-full text-left border-collapse min-w-[800px]">
                     <thead>
                       <tr className="border-b border-white/5">
                         <th className="pb-4 text-[10px] font-mono text-white/30 uppercase">Token & Time</th>
@@ -2119,7 +2177,7 @@ export default function App() {
                       <Brain className="w-3 h-3" /> Trigger Neural Optimization
                     </button>
 
-                    <div className="grid grid-cols-2 gap-3 mb-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
                       {(neuralWeights || []).map((w, i) => (
                         <div key={i} className="bg-white/5 p-3 rounded-lg border border-white/5">
                           <div className="flex items-center justify-between mb-2">
