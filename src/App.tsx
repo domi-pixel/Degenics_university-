@@ -240,9 +240,14 @@ export default function App() {
               await sleep(backoff);
               continue;
             } else {
-              console.error("Gemini Quota Exhausted:", e);
+              // Silent log if we have fallback, otherwise warn
+              if (switchMode === 'auto') {
+                console.info("Gemini Quota Exhausted, falling back to DeepSeek.");
+              } else {
+                console.warn("Gemini Quota Exhausted. No fallback available.");
+              }
               setAiQuotaExhausted(true);
-              setAiThrottledUntil(Date.now() + 2 * 60 * 1000); // Reduced to 2 minute cooldown
+              setAiThrottledUntil(Date.now() + 2 * 60 * 1000); // 2 minute cooldown
               throw new Error("QUOTA_EXHAUSTED");
             }
           }
@@ -612,9 +617,12 @@ export default function App() {
       // First check health to see if server is up
       const healthRes = await fetch('/api/health').catch(() => null);
       if (healthRes && healthRes.ok) {
-        const healthData = await healthRes.json();
-        if (healthData.lastScan) {
-          setLastScanTime(new Date(healthData.lastScan).toLocaleTimeString());
+        const contentType = healthRes.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const healthData = await healthRes.json();
+          if (healthData.lastScan) {
+            setLastScanTime(new Date(healthData.lastScan).toLocaleTimeString());
+          }
         }
       } else {
         console.warn("Server health check failed, retrying...");
@@ -622,12 +630,10 @@ export default function App() {
       }
 
       const configUrl = user ? `/api/config?userId=${user.id}` : '/api/config';
-      const sinceParam = user?.created_at ? `?since=${user.created_at}` : '';
-      const userQuery = user ? `&userId=${user.id}` : '';
       const userQueryOnly = user ? `?userId=${user.id}` : '';
       
       const results = await Promise.all([
-        fetch(`/api/tokens${sinceParam}`),
+        fetch(`/api/tokens${userQueryOnly}`),
         fetch(configUrl),
         fetch('/api/stats'),
         fetch('/api/stats?scope=history'),
@@ -638,7 +644,7 @@ export default function App() {
         fetch(`/api/simulation/portfolio${userQueryOnly}`),
         fetch('/api/neural/weights'),
         fetch(`/api/tokens/history?since=${new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()}`), // For performance (24h)
-        fetch(`/api/tokens/history?chain=${historyChainFilter}&winLoss=${historyWinFilter}&date=${historyDateFilter}${sinceParam ? '&' + sinceParam.slice(1) : ''}`)
+        fetch(`/api/tokens/history?chain=${historyChainFilter}&winLoss=${historyWinFilter}&date=${historyDateFilter}`)
       ]);
 
       const safeJson = async (res: Response) => {
@@ -1522,7 +1528,7 @@ export default function App() {
             </div>
 
             {/* Live Feed */}
-            <div className="col-span-12 lg:col-span-8">
+            <div className="col-span-12 lg:col-span-8 overflow-hidden">
               <Card 
                 title={
                   <div className="flex items-center gap-2">
@@ -1536,7 +1542,7 @@ export default function App() {
                 icon={Activity}
               >
                 <div className="space-y-4">
-                  <AnimatePresence mode="popLayout">
+                  <AnimatePresence>
                     {tokens.map((token, i) => (
                       <motion.div
                         key={token.id || token.address || i}
@@ -1914,8 +1920,8 @@ export default function App() {
                           const chainMatch = historyChainFilter === 'all' || token.chain === historyChainFilter;
                           const winMatch = historyWinFilter === 'all' || 
                             (historyWinFilter === 'winners' ? (token.ath_price / token.call_price >= 2) : (token.ath_price / token.call_price < 2));
-                          const dateMatch = !historyDateFilter || new Date(token.created_at).toISOString().split('T')[0] === historyDateFilter;
-                          return chainMatch && winMatch && dateMatch;
+                          // Performance tab is already 24h scoped, so we ignore the date filter here
+                          return chainMatch && winMatch;
                         })
                         .map((token, i) => (
                         <tr key={token.id || token.address || i} className="group hover:bg-white/[0.02]">
@@ -2451,7 +2457,6 @@ export default function App() {
                       onChange={(e) => updateConfig('min_boost', e.target.value)}
                       className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-emerald-500 transition-colors"
                     >
-                      <option value="100">100x</option>
                       <option value="150">150x</option>
                       <option value="200">200x</option>
                       <option value="500">500x</option>

@@ -8,12 +8,8 @@
       // Safety guard for 'ethereum' property redefinition errors
       // This prevents conflicts between browser extensions and the preview environment
       try {
-        if (!Object.getOwnPropertyDescriptor(window, 'ethereum')) {
-          Object.defineProperty(window, 'ethereum', {
-            value: undefined,
-            writable: true,
-            configurable: true
-          });
+        if (typeof window.ethereum === 'undefined') {
+          window.ethereum = undefined;
         }
       } catch (e) {
         // Silent fail to ensure app continues loading

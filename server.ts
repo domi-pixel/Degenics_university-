@@ -48,6 +48,8 @@ db.exec(`
     alert_20x_sent INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+  CREATE INDEX IF NOT EXISTS idx_tokens_address ON tokens(address);
+  CREATE INDEX IF NOT EXISTS idx_tokens_created_at ON tokens(created_at);
 
   CREATE TABLE IF NOT EXISTS config (
     user_id INTEGER,
@@ -785,7 +787,7 @@ async function scanNewPairs() {
     const response = await axios.get('https://api.dexscreener.com/token-profiles/latest/v1');
     const profiles = response.data || [];
     
-    for (const profile of profiles.slice(0, 5)) {
+    for (const profile of profiles.slice(0, 30)) {
       const address = profile.tokenAddress;
       const chain = profile.chainId;
       
@@ -877,7 +879,7 @@ async function scanNewPairs() {
       // Telegram Alert for all users who have chat_id set
       if (bot) {
         const usersWithAlerts = db.prepare(`
-          SELECT DISTINCT c1.value as chat_id, c3.value as group_id
+          SELECT DISTINCT c1.user_id, c1.value as chat_id, c3.value as group_id
           FROM config c1
           JOIN config c2 ON (c1.user_id = c2.user_id OR (c1.user_id IS NULL AND c2.user_id IS NULL))
           LEFT JOIN config c3 ON (c1.user_id = c3.user_id AND c3.key = 'telegram_group_id')
@@ -886,10 +888,15 @@ async function scanNewPairs() {
 
         for (const u of usersWithAlerts) {
           try {
-            const alertMsg = `🚀 *New Signal Detected!*\n\n*Token:* ${pair.baseToken.symbol}\n*Score:* ${nanaScore.toFixed(1)}\n*Chain:* ${chain}\n*Address:* \`${address}\`\n\n[DexScreener](${pair.url})`;
-            bot.sendMessage(u.chat_id, alertMsg, { parse_mode: 'Markdown' });
-            if (u.group_id && u.group_id !== u.chat_id) {
-              bot.sendMessage(u.group_id, alertMsg, { parse_mode: 'Markdown' });
+            // Check this specific user's min_nana_score
+            const userMinScore = parseFloat(db.prepare("SELECT value FROM config WHERE key = 'min_nana_score' AND (user_id = ? OR user_id IS NULL) ORDER BY user_id DESC LIMIT 1").get(u.user_id)?.value || '70');
+            
+            if (nanaScore >= userMinScore) {
+              const alertMsg = `🚀 *New Signal Detected!*\n\n*Token:* ${pair.baseToken.symbol}\n*Score:* ${nanaScore.toFixed(1)}\n*Chain:* ${chain}\n*Address:* \`${address}\`\n\n[DexScreener](${pair.url})`;
+              bot.sendMessage(u.chat_id, alertMsg, { parse_mode: 'Markdown' });
+              if (u.group_id && u.group_id !== u.chat_id) {
+                bot.sendMessage(u.group_id, alertMsg, { parse_mode: 'Markdown' });
+              }
             }
           } catch (err) {
             console.error(`Failed to send Telegram alert to user:`, err);
@@ -976,15 +983,18 @@ async function startServer() {
 
   app.get('/api/tokens', (req, res) => {
     const since = req.query.since as string;
+    const userId = req.query.userId;
+    
+    // Get the min_nana_score for this user or global
+    const minScore = parseFloat(db.prepare("SELECT value FROM config WHERE key = 'min_nana_score' AND (user_id = ? OR user_id IS NULL) ORDER BY user_id DESC LIMIT 1").get(userId)?.value || '70');
+
     let tokens;
     if (since) {
-      // If 'since' is provided, we still respect it but maybe cap it to 2 hours if it's too old?
-      // Actually, the user wants the live feed to clear every 2 hours.
-      // So let's just enforce the 2-hour limit for the live feed.
-      tokens = db.prepare("SELECT * FROM tokens WHERE created_at >= ? AND created_at > datetime('now', '-2 hours') ORDER BY created_at DESC LIMIT 50").all(since);
+      // Use datetime(?) for robust comparison with ISO strings
+      tokens = db.prepare("SELECT * FROM tokens WHERE created_at >= datetime(?) AND created_at > datetime('now', '-24 hours') AND nana_score >= ? ORDER BY created_at DESC LIMIT 50").all(since, minScore);
     } else {
-      // Default to last 2 hours for live feed
-      tokens = db.prepare("SELECT * FROM tokens WHERE created_at > datetime('now', '-2 hours') ORDER BY created_at DESC LIMIT 50").all();
+      // Default to last 24 hours for live feed to ensure it's not empty too often
+      tokens = db.prepare("SELECT * FROM tokens WHERE created_at > datetime('now', '-24 hours') AND nana_score >= ? ORDER BY created_at DESC LIMIT 50").all(minScore);
     }
     res.json(tokens);
   });
@@ -1011,7 +1021,7 @@ async function startServer() {
     }
 
     if (since) {
-      query += ' AND created_at >= ?';
+      query += ' AND created_at >= datetime(?)';
       params.push(since);
     }
 
@@ -1389,6 +1399,11 @@ async function startServer() {
     }
   });
 
+  // API 404 handler - must be after all API routes but before Vite
+  app.all('/api/*', (req, res) => {
+    res.status(404).json({ error: `API route ${req.method} ${req.url} not found` });
+  });
+
   // Vite integration
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -1415,7 +1430,7 @@ async function startServer() {
     isUpdatingATH = true;
     console.log('[Scanner] Updating ATH prices...');
     try {
-      const tokens = db.prepare("SELECT id, address, chain, ath_price, call_price, symbol, alert_2x_sent, alert_5x_sent, alert_20x_sent FROM tokens WHERE created_at > datetime('now', '-48 hours')").all();
+      const tokens = db.prepare("SELECT id, address, chain, ath_price, call_price, symbol, alert_2x_sent, alert_5x_sent, alert_20x_sent FROM tokens WHERE created_at > datetime('now', '-168 hours')").all();
       for (const token of tokens) {
         try {
           const pairRes = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${token.address}`);
@@ -1488,7 +1503,7 @@ async function startServer() {
   }
 
   // Start background scanner
-  setInterval(scanNewPairs, 60000); // Scan every minute
+  setInterval(scanNewPairs, 30000); // Scan every 30s
   setInterval(updatePrices, 30000); // Update prices every 30s
   setInterval(updateATHPrices, 300000); // Update ATH every 5 minutes
   setInterval(learnFromTrades, 3600000); // Learn every hour
