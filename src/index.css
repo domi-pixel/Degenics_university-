@@ -6,9 +6,19 @@
 }
 
 @layer base {
-  body {
-    @apply bg-[#0a0a0c] text-white antialiased;
+  html, body {
+    @apply bg-[#0a0a0c] text-white antialiased overflow-x-hidden;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
   }
+}
+
+/* Optimization Utilities */
+.gpu {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  perspective: 1000px;
+  will-change: transform, opacity;
 }
 
 /* Custom Scrollbar */

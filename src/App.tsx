@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Shield, 
   Zap, 
@@ -107,7 +107,7 @@ interface User {
 // --- Components ---
 
 const Card: React.FC<{ children?: React.ReactNode, className?: string, title?: React.ReactNode, icon?: any }> = ({ children, className, title, icon: Icon }) => (
-  <div className={cn("bg-[#151619] border border-white/5 rounded-xl overflow-hidden shadow-2xl", className)}>
+  <div className={cn("bg-[#151619] border border-white/5 rounded-xl overflow-hidden shadow-xl md:shadow-2xl gpu", className)}>
     {title && (
       <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between bg-white/2">
         <div className="flex items-center gap-2">
@@ -603,6 +603,7 @@ export default function App() {
   const [historyDateFilter, setHistoryDateFilter] = useState<string>('');
 
   const [lastScanTime, setLastScanTime] = useState<string>('Never');
+  const isFetching = useRef(false);
 
   useEffect(() => {
     if (config) {
@@ -611,6 +612,8 @@ export default function App() {
   }, [config?.ai_provider, config?.ai_switch_mode]);
 
   const fetchData = async () => {
+    if (isFetching.current) return;
+    isFetching.current = true;
     try {
       await checkAiKeyStatus();
       
@@ -691,6 +694,7 @@ export default function App() {
       }
     } finally {
       setLoading(false);
+      isFetching.current = false;
     }
   };
 
@@ -851,7 +855,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#0a0a0c] text-white font-sans selection:bg-emerald-500/30">
       {/* Header */}
-      <header className="border-b border-white/5 bg-[#0a0a0c]/80 backdrop-blur-xl sticky top-0 z-50">
+      <header className="border-b border-white/5 bg-[#0a0a0c]/80 backdrop-blur-md sticky top-0 z-50 gpu">
         <div className="max-w-[1600px] mx-auto px-4 md:px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2 md:gap-3">
             <div className="w-8 h-8 md:w-10 md:h-10 bg-emerald-500 rounded-lg flex items-center justify-center shadow-[0_0_20px_rgba(16,185,129,0.3)]">
@@ -960,7 +964,8 @@ export default function App() {
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
               exit={{ opacity: 0, height: 0 }}
-              className="xl:hidden border-t border-white/5 bg-[#0a0a0c] overflow-hidden"
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="xl:hidden border-t border-white/5 bg-[#0a0a0c] overflow-hidden gpu"
             >
               <div className="p-4 space-y-2">
                 {(['live', 'performance', 'simulation', 'social', 'history', 'config'] as const).map((tab) => (
@@ -1118,7 +1123,7 @@ export default function App() {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               <div className="lg:col-span-2 space-y-6">
                 <Card title="Current Portfolio" icon={Wallet}>
-                  <div className="overflow-x-auto -mx-4 px-4">
+                  <div className="overflow-x-auto -mx-4 px-4 gpu">
                     <table className="w-full text-left border-collapse min-w-[600px]">
                       <thead>
                         <tr className="border-b border-white/5">
@@ -1366,7 +1371,7 @@ export default function App() {
                   Reset
                 </button>
               </div>
-              <div className="overflow-x-auto -mx-4 px-4">
+              <div className="overflow-x-auto -mx-4 px-4 gpu">
                 <table className="w-full text-left border-collapse min-w-[800px]">
                   <thead>
                     <tr className="border-b border-white/5">
@@ -1542,14 +1547,15 @@ export default function App() {
                 icon={Activity}
               >
                 <div className="space-y-4">
-                  <AnimatePresence>
+                  <AnimatePresence initial={false}>
                     {tokens.map((token, i) => (
                       <motion.div
                         key={token.id || token.address || i}
-                        initial={{ opacity: 0, y: 20 }}
+                        initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, scale: 0.95 }}
-                        className="group bg-white/2 hover:bg-white/[0.04] border border-white/5 rounded-xl p-3 md:p-4 transition-all"
+                        exit={{ opacity: 0, scale: 0.98 }}
+                        transition={{ duration: 0.2 }}
+                        className="group bg-white/2 hover:bg-white/[0.04] border border-white/5 rounded-xl p-3 md:p-4 transition-all gpu"
                       >
                         <div className="flex flex-col sm:flex-row items-start justify-between gap-4">
                           <div className="flex gap-3 md:gap-4 w-full sm:w-auto">
@@ -1900,7 +1906,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="overflow-x-auto -mx-4 px-4">
+                <div className="overflow-x-auto -mx-4 px-4 gpu">
                   <table className="w-full text-left border-collapse min-w-[800px]">
                     <thead>
                       <tr className="border-b border-white/5">
