@@ -1348,7 +1348,7 @@ export default function App() {
                   >
                     <option value="all">All Signals</option>
                     <option value="winners">Winners (2x+)</option>
-                    <option value="losers">Losers (&lt;1.1x)</option>
+                    <option value="losers">Losers (&lt;2x)</option>
                   </select>
                 </div>
                 <div className="space-y-1 flex-1 min-w-[120px]">
@@ -1925,7 +1925,7 @@ export default function App() {
                         .filter(token => {
                           const chainMatch = historyChainFilter === 'all' || token.chain === historyChainFilter;
                           const winMatch = historyWinFilter === 'all' || 
-                            (historyWinFilter === 'winners' ? (token.ath_price / token.call_price >= 2) : (token.ath_price / token.call_price < 2));
+                            (historyWinFilter === 'winners' ? (token.call_price > 0 && token.ath_price / token.call_price >= 2) : (token.call_price === 0 || token.ath_price / token.call_price < 2));
                           // Performance tab is already 24h scoped, so we ignore the date filter here
                           return chainMatch && winMatch;
                         })

@@ -81,6 +81,7 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS insights (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    address TEXT,
     insight TEXT,
     weight_adjustment REAL,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -238,6 +239,18 @@ try {
   }
 }
 
+// Migration: Ensure insights has address column
+try {
+  db.prepare("SELECT address FROM insights LIMIT 1").get();
+} catch (e) {
+  console.log('Migrating insights: adding address column');
+  try {
+    db.exec("ALTER TABLE insights ADD COLUMN address TEXT");
+  } catch (err) {
+    console.error('Migration failed:', err);
+  }
+}
+
 // Migration: Update neural weights factors
 try {
   db.prepare("UPDATE neural_weights SET factor = 'Dev Activity' WHERE factor = 'Dev History'").run();
@@ -283,22 +296,45 @@ function getNeuralWeights() {
 
 function calculateNanaScore(factors: any) {
   const weights = getNeuralWeights();
-  let score = 0;
+  let qualityScore = 0;
+  let qualityWeightSum = 0;
+  
+  const rugRisk = factors['Rug Risk'] || 0;
+  const rugWeight = weights.find((w: any) => w.factor === 'Rug Risk')?.weight || 0.15;
+
   weights.forEach((w: any) => {
-    if (factors[w.factor] !== undefined) {
-      if (w.factor === 'Rug Risk') {
-        // Rug risk is a negative factor
-        score -= factors[w.factor] * w.weight;
-      } else {
-        score += factors[w.factor] * w.weight;
-      }
+    if (w.factor !== 'Rug Risk' && factors[w.factor] !== undefined) {
+      qualityScore += factors[w.factor] * w.weight;
+      qualityWeightSum += w.weight;
     }
   });
-  return Math.min(100, Math.max(0, score));
+
+  // Normalize quality score to 0-100 scale
+  if (qualityWeightSum > 0) {
+    qualityScore = qualityScore / qualityWeightSum;
+  }
+
+  // Safety Factor: 1.0 (perfect) to 0.0 (dead)
+  // Higher rugWeight makes the penalty more severe
+  // We use a non-linear decay so high risk tokens are penalized heavily
+  const safetyFactor = Math.pow(1 - (Math.min(100, rugRisk) / 100), 1 + (rugWeight * 5)); 
+  
+  let finalScore = qualityScore * safetyFactor;
+
+  // Hard floors for safety
+  if (rugRisk > 60) finalScore *= 0.5;
+  if (rugRisk > 85) finalScore = 0;
+
+  return Math.min(100, Math.max(0, finalScore));
 }
 
 async function learnFromTrades() {
-  console.log('[Neural Engine] Learning from recent trades...');
+  console.log('[Neural Engine] Learning from recent performance...');
+  
+  const weights = getNeuralWeights();
+  const learningRate = 0.02; // Slightly higher learning rate for faster adaptation
+
+  // 1. Learn from Simulation Trades (Realized Profit/Loss)
   const recentSells = db.prepare(`
     SELECT t.*, tok.liquidity, tok.sentiment_score, tok.dev_activity_score, tok.rug_risk_score
     FROM simulation_trades t
@@ -306,28 +342,73 @@ async function learnFromTrades() {
     WHERE t.type = 'sell' AND t.timestamp > datetime('now', '-24 hours')
   `).all();
 
-  if (recentSells.length === 0) return;
-
-  const weights = getNeuralWeights();
-  const learningRate = 0.01;
-
   recentSells.forEach((trade: any) => {
     const isProfitable = trade.profit_usd > 0;
     const adjustment = isProfitable ? learningRate : -learningRate;
 
-    // Simplified learning: adjust weights based on token characteristics at time of trade
-    // In a real app, we'd store the factor values at the time of the 'buy'
     weights.forEach((w: any) => {
-      let factorValue = 0.5; // Default
-      if (w.factor === 'Liquidity Depth') factorValue = Math.min(1, trade.liquidity / 100000);
+      let factorValue = 0.5;
+      if (w.factor === 'Liquidity Depth') factorValue = Math.min(1, trade.liquidity / 25000);
       if (w.factor === 'Social Velocity') factorValue = trade.sentiment_score / 100;
       if (w.factor === 'Dev Activity') factorValue = trade.dev_activity_score / 100;
       if (w.factor === 'Rug Risk') factorValue = trade.rug_risk_score / 100;
-      if (w.factor === 'Holder Distribution') factorValue = 0.6; // Mock
+      if (w.factor === 'Holder Distribution') factorValue = 0.75;
 
-      w.weight += adjustment * (factorValue - 0.5);
+      // For negative factors like Rug Risk, a "good" value is LOW
+      const normalizedValue = w.factor === 'Rug Risk' ? (1 - factorValue) : factorValue;
+      w.weight += adjustment * (normalizedValue - 0.5);
     });
   });
+
+  // 2. Learn from "Natural Winners" (Tokens that hit 2x+ regardless of simulation)
+  const naturalWinners = db.prepare(`
+    SELECT * FROM tokens 
+    WHERE created_at > datetime('now', '-24 hours') 
+    AND call_price > 0 AND ath_price >= call_price * 2
+  `).all();
+
+  naturalWinners.forEach((token: any) => {
+    const multiplier = token.ath_price / token.call_price;
+    const adjustment = learningRate * Math.min(2, multiplier / 2); // Scale adjustment by performance
+
+    weights.forEach((w: any) => {
+      let factorValue = 0.5;
+      if (w.factor === 'Liquidity Depth') factorValue = Math.min(1, token.liquidity / 25000);
+      if (w.factor === 'Social Velocity') factorValue = token.sentiment_score / 100;
+      if (w.factor === 'Dev Activity') factorValue = token.dev_activity_score / 100;
+      if (w.factor === 'Rug Risk') factorValue = token.rug_risk_score / 100;
+      if (w.factor === 'Holder Distribution') factorValue = 0.75;
+
+      const normalizedValue = w.factor === 'Rug Risk' ? (1 - factorValue) : factorValue;
+      w.weight += adjustment * (normalizedValue - 0.5);
+    });
+  });
+
+  // 3. Learn from Manual Insights
+  const manualInsights = db.prepare(`
+    SELECT * FROM insights 
+    WHERE timestamp > datetime('now', '-24 hours') AND address IS NOT NULL
+  `).all();
+
+  manualInsights.forEach((insight: any) => {
+    const token = db.prepare("SELECT * FROM tokens WHERE address = ?").get(insight.address);
+    if (token) {
+      const adjustment = insight.weight_adjustment || learningRate;
+      weights.forEach((w: any) => {
+        let factorValue = 0.5;
+        if (w.factor === 'Liquidity Depth') factorValue = Math.min(1, token.liquidity / 25000);
+        if (w.factor === 'Social Velocity') factorValue = token.sentiment_score / 100;
+        if (w.factor === 'Dev Activity') factorValue = token.dev_activity_score / 100;
+        if (w.factor === 'Rug Risk') factorValue = token.rug_risk_score / 100;
+        if (w.factor === 'Holder Distribution') factorValue = 0.75;
+
+        const normalizedValue = w.factor === 'Rug Risk' ? (1 - factorValue) : factorValue;
+        w.weight += adjustment * (normalizedValue - 0.5);
+      });
+    }
+  });
+
+  if (recentSells.length === 0 && naturalWinners.length === 0 && manualInsights.length === 0) return;
 
   // Normalize weights
   const totalWeight = weights.reduce((acc: number, w: any) => acc + Math.max(0.01, w.weight), 0);
@@ -338,7 +419,7 @@ async function learnFromTrades() {
 
   const topFactor = weights.sort((a: any, b: any) => b.weight - a.weight)[0];
   db.prepare('INSERT INTO insights (insight, weight_adjustment) VALUES (?, ?)')
-    .run(`Neural Engine optimized: Increased focus on ${topFactor.factor} based on recent performance.`, 0.05);
+    .run(`Neural Engine optimized: Increased focus on ${topFactor.factor} based on ${recentSells.length} trades and ${naturalWinners.length} winners.`, 0.05);
 }
 
 // Telegram Bot Setup
@@ -377,27 +458,28 @@ function initBot() {
         if (text === '/commands' || text === '/help') {
           const help = `👼 *DEGENICS ANGEL COMMANDS*
 
-\`/status\` - Check system health and scanning state
-\`/performance\` - View win rate and ROI stats
-\`/portfolio\` - View your current simulation holdings
-\`/settings\` - View your current risk and profit settings
-\`/top\` - See top 5 tokens by Nana Score
-\`/recent\` (alias: \`/signals\`) - View the 5 most recent signals
-\`/filters\` - View current scanning parameters
-\`/insights\` - View latest AI learned patterns
-\`/learn\` <address> <reason> - Ingest a successful token for pattern learning
-\`/chatid\` (alias: \`/id\`) - Get your Telegram User ID
-\`/testalert\` (alias: \`/test\`) - Test your alert connection
-\`/setrisk\` <val> - Set risk tolerance (0.1 - 3.0)
-\`/setprofit\` <val> - Set profit target ROI (1.1 - 5.0)
-\`/buy\` <address> <amount> - Manual simulation buy (USD)
-\`/sell\` <address> <percent> - Manual simulation sell (%)
-\`/reset\` - Reset your simulation balances
-\`/pause\` - Pause the scanning engine
-\`/resume\` - Resume the scanning engine
-\`/history\` - View top 20 tokens by ATH performance
-\`/config_group\` <id> - Set your Telegram Group ID for alerts
-\`/commands\` (alias: \`/help\`) - Show this list`;
+/status - Check system health and scanning state
+/performance - View win rate and ROI stats
+/portfolio - View your current simulation holdings
+/settings - View your current risk and profit settings
+/top - See top 5 tokens by Nana Score
+/recent (alias: /signals) - View the 5 most recent signals
+/filters - View current scanning parameters
+/insights - View latest AI learned patterns
+/learn <address> <reason> - Ingest a successful token for pattern learning
+/chatid (alias: /id) - Get your Telegram User ID
+/testalert (alias: /test) - Test your alert connection
+/setrisk <val> - Set risk tolerance (0.1 - 3.0)
+/setprofit <val> - Set profit target ROI (1.1 - 5.0)
+/buy <address> <amount> - Manual simulation buy (USD)
+/sell <address> <percent> - Manual simulation sell (%)
+/reset - Reset your simulation balances
+/pause - Pause the scanning engine
+/resume - Resume the scanning engine
+/history - View top 20 tokens by ATH performance (Overall)
+/history24 - View top 20 tokens by ATH performance (Last 24h)
+/config_group <id> - Set your Telegram Group ID for alerts
+/commands (alias: /help) - Show this list`;
           await bot?.sendMessage(chatId, help, { parse_mode: 'Markdown' });
           return;
         }
@@ -653,7 +735,7 @@ function initBot() {
             }
             const address = parts[1];
             const reason = parts.slice(2).join(' ');
-            db.prepare("INSERT INTO insights (insight, weight_adjustment) VALUES (?, ?)").run(`Manual Learning (${address}): ${reason}`, 0.05);
+            db.prepare("INSERT INTO insights (address, insight, weight_adjustment) VALUES (?, ?, ?)").run(address, `Manual Learning: ${reason}`, 0.05);
             await bot?.sendMessage(chatId, `👼 *Learning Ingested*\n\nAddress: \`${address}\`\nReason: ${reason}\n\nAI weights will be adjusted in the next cycle.`, { parse_mode: 'Markdown' });
             return;
           }
@@ -713,9 +795,35 @@ function initBot() {
 
             console.log(`[Telegram] History requested. Found ${history.length} tokens.`);
             
-            let msgText = `👼 *Top 20 Signal History (Sorted by ATH)*\n\n`;
+            let msgText = `👼 *Top 20 Signal History (Overall)*\n\n`;
             if (history.length === 0) {
               msgText += "_No signals recorded yet._";
+            } else {
+              history.forEach((t: any, i: number) => {
+                const mult = t.multiplier || 1;
+                msgText += `${i+1}. *${t.symbol}* - ATH: $${(t.ath_price || 0).toFixed(6)} (${mult.toFixed(1)}x)\n`;
+              });
+            }
+            await bot?.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+            return;
+          }
+
+          if (text === '/history24') {
+            const history = db.prepare(`
+              SELECT symbol, ath_price, call_price, 
+              CASE WHEN call_price > 0 THEN (ath_price / call_price) ELSE 1 END as multiplier 
+              FROM tokens 
+              WHERE ath_price IS NOT NULL AND call_price IS NOT NULL 
+              AND created_at > datetime('now', '-24 hours')
+              ORDER BY multiplier DESC 
+              LIMIT 20
+            `).all();
+
+            console.log(`[Telegram] History (24h) requested. Found ${history.length} tokens.`);
+            
+            let msgText = `👼 *Top 20 Signal History (Last 24h)*\n\n`;
+            if (history.length === 0) {
+              msgText += "_No signals recorded in the last 24 hours._";
             } else {
               history.forEach((t: any, i: number) => {
                 const mult = t.multiplier || 1;
@@ -808,19 +916,26 @@ async function scanNewPairs() {
       // Basic filtering
       if (liquidity < 5000) continue;
 
-      // More realistic rug risk calculation
-      let rugRisk = 20 + Math.random() * 30; // Base risk
-      if (liquidity > 50000) rugRisk -= 10;
-      if (mcap > 500000) rugRisk -= 5;
-      if (pair.boosts && pair.boosts.active > 0) rugRisk -= 5;
+      // More realistic factor simulation
+      let rugRisk = 15 + Math.random() * 35; // Base risk 15-50
+      if (liquidity < 10000) rugRisk += 20; // Low liquidity is risky
+      if (mcap < 50000) rugRisk += 15; // Low mcap is risky
+      if (pair.boosts && pair.boosts.active > 0) rugRisk -= 10;
       
-      const sentiment = 50 + Math.random() * 40;
+      const sentiment = 30 + Math.random() * 60;
       const devActivity = Math.random() * 100;
       
+      // Holder distribution: 0 (bad) to 100 (good)
+      let holderDist = 40 + Math.random() * 50;
+      if (rugRisk > 40) holderDist -= 20;
+      
+      const priceUsd = parseFloat(pair.priceUsd || '0');
+      if (isNaN(priceUsd) || priceUsd <= 0) continue;
+
       // Improved scaling for the "trenches"
       const nanaScore = calculateNanaScore({
         'Liquidity Depth': Math.min(100, (liquidity / 25000) * 100), // $25k liquidity = 100 score for this factor
-        'Holder Distribution': 75 + (Math.random() * 15), 
+        'Holder Distribution': holderDist, 
         'Social Velocity': sentiment,
         'Dev Activity': devActivity,
         'Rug Risk': rugRisk
@@ -839,13 +954,13 @@ async function scanNewPairs() {
         mcap, liquidity, Math.random() > 0.7 ? 1 : 0, 'Pending Neural Analysis', devActivity
       );
 
-      console.log(`[Scanner] New token detected: ${pair.baseToken.symbol} on ${chain}`);
+      console.log(`[Scanner] New token detected: ${pair.baseToken.symbol} on ${chain} at $${priceUsd}`);
 
       // Auto-Simulation Trading for all users
       const minNanaScore = parseFloat(db.prepare("SELECT value FROM config WHERE key = ?").get('min_nana_score')?.value || '70');
       if (nanaScore >= minNanaScore && rugRisk < 15) {
         const amountUsd = 10;
-        const price = parseFloat(pair.priceUsd);
+        const price = priceUsd;
         const quantity = amountUsd / price;
         
         const users = db.prepare('SELECT id FROM users').all();
@@ -1009,10 +1124,10 @@ async function startServer() {
       params.push(chain);
     }
 
-    if (winLoss === 'win') {
-      query += ' AND ath_price >= call_price * 2';
-    } else if (winLoss === 'loss') {
-      query += ' AND ath_price < call_price * 2';
+    if (winLoss === 'winners' || winLoss === 'win') {
+      query += ' AND call_price > 0 AND ath_price >= call_price * 2';
+    } else if (winLoss === 'losers' || winLoss === 'loss') {
+      query += ' AND (call_price = 0 OR ath_price < call_price * 2)';
     }
 
     if (date) {
@@ -1048,8 +1163,8 @@ async function startServer() {
     try {
       const totalCalls = db.prepare(`SELECT COUNT(*) as count FROM tokens ${timeFilter}`).get()?.count || 0;
       const avgSentiment = db.prepare(`SELECT AVG(sentiment_score) as avg FROM tokens ${timeFilter}`).get()?.avg || 0;
-      const explosive = db.prepare(`SELECT COUNT(*) as count FROM tokens ${timeFilter} ${timeFilter ? 'AND' : 'WHERE'} ath_price >= call_price * 5`).get()?.count || 0;
-      const winners = db.prepare(`SELECT COUNT(*) as count FROM tokens ${timeFilter} ${timeFilter ? 'AND' : 'WHERE'} ath_price >= call_price * 2`).get()?.count || 0;
+      const explosive = db.prepare(`SELECT COUNT(*) as count FROM tokens ${timeFilter} ${timeFilter ? 'AND' : 'WHERE'} call_price > 0 AND ath_price >= call_price * 5`).get()?.count || 0;
+      const winners = db.prepare(`SELECT COUNT(*) as count FROM tokens ${timeFilter} ${timeFilter ? 'AND' : 'WHERE'} call_price > 0 AND ath_price >= call_price * 2`).get()?.count || 0;
       const winRate = totalCalls > 0 ? (winners / totalCalls) * 100 : 0;
       
       res.json({
@@ -1435,7 +1550,8 @@ async function startServer() {
         try {
           const pairRes = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${token.address}`);
           const pairs = pairRes.data.pairs || [];
-          const pair = pairs.find((p: any) => p.chainId === token.chain) || pairs[0];
+          // Strict chain matching to avoid price glitches from other chains
+          const pair = pairs.find((p: any) => p.chainId === token.chain);
           
           if (pair) {
             const currentPrice = parseFloat(pair.priceUsd);
