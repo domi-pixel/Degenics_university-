@@ -58,7 +58,6 @@ interface Token {
   name: string;
   chain: string;
   address: string;
-  boost_level: number;
   liquidity: number;
   buy_pressure: number;
   nana_score: number;
@@ -88,7 +87,6 @@ interface Config {
   alerts_enabled: string;
   scanning_active: string;
   scanned_chains: string;
-  min_boost: string;
   min_nana_score: string;
   min_liquidity: string;
   risk_mode: string;
@@ -1775,10 +1773,6 @@ export default function App() {
                     </Badge>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-xs text-white/40 font-mono uppercase">Min Boost</span>
-                    <span className="text-xs font-mono">{config?.min_boost}x</span>
-                  </div>
-                  <div className="flex items-center justify-between">
                     <span className="text-xs text-white/40 font-mono uppercase">Risk Mode</span>
                     <span className="text-xs font-mono uppercase text-emerald-400">{config?.risk_mode}</span>
                   </div>
@@ -2455,18 +2449,6 @@ export default function App() {
                         );
                       })}
                     </div>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-mono text-white/40 uppercase">Min Boost</label>
-                    <select 
-                      value={config.min_boost}
-                      onChange={(e) => updateConfig('min_boost', e.target.value)}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-emerald-500 transition-colors"
-                    >
-                      <option value="150">150x</option>
-                      <option value="200">200x</option>
-                      <option value="500">500x</option>
-                    </select>
                   </div>
                   <div className="space-y-2">
                     <label className="text-[10px] font-mono text-white/40 uppercase">Min Nana Score</label>

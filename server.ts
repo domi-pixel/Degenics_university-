@@ -262,7 +262,6 @@ try {
 // Seed default config
 const defaultConfigGlobal = [
   ['scanning_active', 'true'],
-  ['min_boost', '100'],
   ['min_nana_score', '70'],
   ['risk_mode', 'balanced'],
   ['risk_tolerance', '1.0'],
@@ -684,15 +683,24 @@ function initBot() {
           }
 
           if (text === '/filters') {
-            const minScore = db.prepare("SELECT value FROM config WHERE key = 'min_nana_score' AND user_id IS NULL").get()?.value || '70';
-            const minLiq = db.prepare("SELECT value FROM config WHERE key = 'min_liquidity' AND user_id IS NULL").get()?.value || '5000';
-            const maxRug = db.prepare("SELECT value FROM config WHERE key = 'max_rug_score' AND user_id IS NULL").get()?.value || '50';
+            const user = db.prepare("SELECT user_id FROM config WHERE key = 'chat_id' AND value = ?").get(chatId.toString());
+            const uid = user ? user.user_id : null;
+            
+            const getConfig = (key: string, defaultVal: string) => {
+              return db.prepare("SELECT value FROM config WHERE key = ? AND (user_id = ? OR user_id IS NULL) ORDER BY user_id DESC LIMIT 1").get(key, uid)?.value || defaultVal;
+            };
+
+            const minScore = getConfig('min_nana_score', '70');
+            const minLiq = getConfig('min_liquidity', '5000');
+            const maxRug = getConfig('max_rug_score', '50');
+            const alertsEnabled = getConfig('alerts_enabled', 'false');
             
             const filters = `👼 *Current Scanning Filters*
 
 *Min Nana Score:* ${minScore}
 *Min Liquidity:* $${minLiq}
 *Max Rug Score:* ${maxRug}
+*Alerts:* ${alertsEnabled === 'true' ? '✅ Enabled' : '❌ Disabled'}
 *Auto-Buy:* Enabled (Global)`;
             await bot?.sendMessage(chatId, filters, { parse_mode: 'Markdown' });
             return;
@@ -750,6 +758,32 @@ function initBot() {
             const userId = user ? user.user_id : null;
             db.prepare("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?, ?, ?)").run(userId, 'profit_target', val.toString());
             await bot?.sendMessage(chatId, `👼 *Profit Target Set:* ${val}x`);
+            return;
+          }
+
+          if (text.startsWith('/setscore ')) {
+            const val = parseFloat(text.split(' ')[1]);
+            if (isNaN(val) || val < 0 || val > 100) {
+              await bot?.sendMessage(chatId, "Please provide a value between 0 and 100");
+              return;
+            }
+            const user = db.prepare("SELECT user_id FROM config WHERE key = 'chat_id' AND value = ?").get(chatId.toString());
+            const userId = user ? user.user_id : null;
+            db.prepare("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?, ?, ?)").run(userId, 'min_nana_score', val.toString());
+            await bot?.sendMessage(chatId, `👼 *Min Nana Score Set:* ${val}`);
+            return;
+          }
+
+          if (text.startsWith('/setliq ')) {
+            const val = parseFloat(text.split(' ')[1]);
+            if (isNaN(val) || val < 0) {
+              await bot?.sendMessage(chatId, "Please provide a positive value");
+              return;
+            }
+            const user = db.prepare("SELECT user_id FROM config WHERE key = 'chat_id' AND value = ?").get(chatId.toString());
+            const userId = user ? user.user_id : null;
+            db.prepare("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?, ?, ?)").run(userId, 'min_liquidity', val.toString());
+            await bot?.sendMessage(chatId, `👼 *Min Liquidity Set:* $${val}`);
             return;
           }
 
@@ -873,15 +907,9 @@ async function scanNewPairs() {
   lastScan = Date.now();
   console.log('[Scanner] Scanning for new pairs...');
   try {
-    // 1. Fetch latest profiles (paid/boosted)
+    // Fetch latest profiles (paid/boosted)
     const profileRes = await axios.get('https://api.dexscreener.com/token-profiles/latest/v1').catch(() => ({ data: [] }));
-    const profiles = profileRes.data || [];
-    
-    // 2. Fetch latest boosted tokens
-    const boostedRes = await axios.get('https://api.dexscreener.com/token-boosts/latest/v1').catch(() => ({ data: [] }));
-    const boosted = boostedRes.data || [];
-
-    const allDetected = [...profiles, ...boosted];
+    const allDetected = profileRes.data || [];
     
     for (const item of allDetected.slice(0, 50)) {
       const address = item.tokenAddress;
@@ -901,14 +929,14 @@ async function scanNewPairs() {
       const liquidity = pair.liquidity?.usd || 0;
       const mcap = pair.fdv || 0;
       
-      // Basic filtering
-      if (liquidity < 5000) continue;
+      // Basic filtering using global config
+      const globalMinLiq = parseFloat(db.prepare("SELECT value FROM config WHERE key = 'min_liquidity' AND user_id IS NULL").get()?.value || '5000');
+      if (liquidity < globalMinLiq) continue;
 
       // More realistic rug risk calculation
       let rugRisk = 20 + Math.random() * 30; // Base risk
       if (liquidity > 50000) rugRisk -= 10;
       if (mcap > 500000) rugRisk -= 5;
-      if (pair.boosts && pair.boosts.active > 0) rugRisk -= 5;
       
       const sentiment = 50 + Math.random() * 40;
       const devActivity = Math.random() * 100;
@@ -940,65 +968,67 @@ async function scanNewPairs() {
 
       console.log(`[Scanner] New token detected: ${pair.baseToken.symbol} on ${chain} at $${priceUsd}`);
 
-      // Auto-Simulation Trading for all users
-      const minNanaScore = parseFloat(db.prepare("SELECT value FROM config WHERE key = ?").get('min_nana_score')?.value || '70');
-      if (nanaScore >= minNanaScore && rugRisk < 15) {
-        const amountUsd = 10;
-        const price = priceUsd;
-        const quantity = amountUsd / price;
-        
-        const users = db.prepare('SELECT id FROM users').all();
-        for (const user of users) {
-          try {
-            // Check balance for this user
-            const currentBalance = db.prepare('SELECT balance FROM balances WHERE user_id = ? AND chain = ?').get(user.id, chain)?.balance || 0;
-            if (currentBalance >= amountUsd) {
-              db.prepare('INSERT INTO simulation_trades (user_id, address, symbol, chain, type, amount_usd, price, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-                .run(user.id, address, pair.baseToken.symbol, chain, 'buy', amountUsd, price, 'Neural Engine High Confidence Entry');
+      // 1. Resolve all users who might be interested
+      // This includes all users in the 'users' table, plus the 'global' context (null user_id)
+      const allUserIds = db.prepare('SELECT id FROM users').all().map(u => u.id);
+      allUserIds.push(null); // Add global context
 
-              db.prepare('UPDATE balances SET balance = balance - ? WHERE user_id = ? AND chain = ?').run(amountUsd, user.id, chain);
+      for (const uid of allUserIds) {
+        // Helper to get config for this user (with fallback to global)
+        const getConfig = (key: string, defaultVal: string) => {
+          return db.prepare("SELECT value FROM config WHERE key = ? AND (user_id = ? OR user_id IS NULL) ORDER BY user_id DESC LIMIT 1").get(key, uid)?.value || defaultVal;
+        };
 
-              db.prepare(`
-                INSERT INTO portfolio (user_id, address, symbol, chain, quantity, avg_buy_price, current_price, total_value)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id, address) DO UPDATE SET
-                  quantity = quantity + excluded.quantity,
-                  avg_buy_price = (avg_buy_price * quantity + excluded.avg_buy_price * excluded.quantity) / (quantity + excluded.quantity),
-                  total_value = total_value + excluded.total_value
-              `).run(user.id, address, pair.baseToken.symbol, chain, quantity, price, price, amountUsd);
+        const minScore = parseFloat(getConfig('min_nana_score', '70'));
+        const minLiq = parseFloat(getConfig('min_liquidity', '5000'));
+        const alertsEnabled = getConfig('alerts_enabled', 'false') === 'true';
+        const chatId = getConfig('chat_id', '');
+        const groupId = getConfig('telegram_group_id', '');
+
+        // Check if token meets this user's criteria
+        if (nanaScore >= minScore && liquidity >= minLiq) {
+          
+          // A. Auto-Simulation Trading (only for real users, not global context)
+          if (uid !== null && rugRisk < 15) {
+            try {
+              const amountUsd = 10;
+              const price = priceUsd;
+              const quantity = amountUsd / price;
               
-              console.log(`[Simulation] Auto-bought ${pair.baseToken.symbol} for user ${user.id} due to high score (${nanaScore.toFixed(1)})`);
-            }
-          } catch (err) {
-            console.error(`[Simulation] Failed auto-buy for user ${user.id}:`, err);
-          }
-        }
-      }
+              const currentBalance = db.prepare('SELECT balance FROM balances WHERE user_id = ? AND chain = ?').get(uid, chain)?.balance || 0;
+              if (currentBalance >= amountUsd) {
+                db.prepare('INSERT INTO simulation_trades (user_id, address, symbol, chain, type, amount_usd, price, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+                  .run(uid, address, pair.baseToken.symbol, chain, 'buy', amountUsd, price, 'Neural Engine High Confidence Entry');
 
-      // Telegram Alert for all users who have chat_id set
-      if (bot) {
-        const usersWithAlerts = db.prepare(`
-          SELECT DISTINCT c1.user_id, c1.value as chat_id, c3.value as group_id
-          FROM config c1
-          JOIN config c2 ON (c1.user_id = c2.user_id OR (c1.user_id IS NULL AND c2.user_id IS NULL))
-          LEFT JOIN config c3 ON (c1.user_id = c3.user_id AND c3.key = 'telegram_group_id')
-          WHERE c1.key = 'chat_id' AND c2.key = 'alerts_enabled' AND c2.value = 'true'
-        `).all();
+                db.prepare('UPDATE balances SET balance = balance - ? WHERE user_id = ? AND chain = ?').run(amountUsd, uid, chain);
 
-        for (const u of usersWithAlerts) {
-          try {
-            // Check this specific user's min_nana_score
-            const userMinScore = parseFloat(db.prepare("SELECT value FROM config WHERE key = 'min_nana_score' AND (user_id = ? OR user_id IS NULL) ORDER BY user_id DESC LIMIT 1").get(u.user_id)?.value || '70');
-            
-            if (nanaScore >= userMinScore) {
-              const alertMsg = `🚀 *New Signal Detected!*\n\n*Token:* ${pair.baseToken.symbol}\n*Score:* ${nanaScore.toFixed(1)}\n*Chain:* ${chain}\n*Address:* \`${address}\`\n\n[DexScreener](${pair.url})`;
-              bot.sendMessage(u.chat_id, alertMsg, { parse_mode: 'Markdown' });
-              if (u.group_id && u.group_id !== u.chat_id) {
-                bot.sendMessage(u.group_id, alertMsg, { parse_mode: 'Markdown' });
+                db.prepare(`
+                  INSERT INTO portfolio (user_id, address, symbol, chain, quantity, avg_buy_price, current_price, total_value)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                  ON CONFLICT(user_id, address) DO UPDATE SET
+                    quantity = quantity + excluded.quantity,
+                    avg_buy_price = (avg_buy_price * quantity + excluded.avg_buy_price * excluded.quantity) / (quantity + excluded.quantity),
+                    total_value = total_value + excluded.total_value
+                `).run(uid, address, pair.baseToken.symbol, chain, quantity, price, price, amountUsd);
+                
+                console.log(`[Simulation] Auto-bought ${pair.baseToken.symbol} for user ${uid} due to high score (${nanaScore.toFixed(1)})`);
               }
+            } catch (err) {
+              console.error(`[Simulation] Failed auto-buy for user ${uid}:`, err);
             }
-          } catch (err) {
-            console.error(`Failed to send Telegram alert to user:`, err);
+          }
+
+          // B. Telegram Alerts
+          if (bot && alertsEnabled && chatId) {
+            try {
+              const alertMsg = `🚀 *New Signal Detected!*\n\n*Token:* ${pair.baseToken.symbol}\n*Score:* ${nanaScore.toFixed(1)}\n*Chain:* ${chain}\n*Address:* \`${address}\`\n\n[DexScreener](${pair.url})`;
+              bot.sendMessage(chatId, alertMsg, { parse_mode: 'Markdown' });
+              if (groupId && groupId !== chatId) {
+                bot.sendMessage(groupId, alertMsg, { parse_mode: 'Markdown' });
+              }
+            } catch (err) {
+              console.error(`Failed to send Telegram alert to user ${uid}:`, err);
+            }
           }
         }
       }
@@ -1073,7 +1103,7 @@ async function startServer() {
   app.post('/api/config', (req, res) => {
     const { key, value, userId } = req.body;
     // Keys that are per-user
-    const perUserKeys = ['chat_id', 'alerts_enabled', 'telegram_group_id'];
+    const perUserKeys = ['chat_id', 'alerts_enabled', 'telegram_group_id', 'min_nana_score', 'risk_mode', 'risk_tolerance', 'profit_target', 'min_liquidity'];
     const targetUserId = perUserKeys.includes(key) ? userId : null;
     
     db.prepare('INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?, ?, ?)').run(targetUserId, key, String(value));
@@ -1082,19 +1112,23 @@ async function startServer() {
 
   app.get('/api/tokens', (req, res) => {
     const since = req.query.since as string;
-    const userId = req.query.userId;
+    const rawUserId = req.query.userId;
+    const userId = rawUserId ? parseInt(rawUserId as string) : null;
     
-    // Get the min_nana_score for this user or global
-    const minScore = parseFloat(db.prepare("SELECT value FROM config WHERE key = 'min_nana_score' AND (user_id = ? OR user_id IS NULL) ORDER BY user_id DESC LIMIT 1").get(userId)?.value || '70');
+    // Get the min_nana_score and min_liquidity for this user or global
+    const configRows = db.prepare("SELECT key, value FROM config WHERE (user_id = ? OR user_id IS NULL) AND key IN ('min_nana_score', 'min_liquidity') ORDER BY user_id DESC").all(userId);
+    
+    const minScore = parseFloat(configRows.find(r => r.key === 'min_nana_score')?.value || '70');
+    const minLiq = parseFloat(configRows.find(r => r.key === 'min_liquidity')?.value || '5000');
 
     let tokens;
     if (since) {
       // Use datetime(?) for robust comparison with ISO strings
-      tokens = db.prepare("SELECT * FROM tokens WHERE created_at >= datetime(?) AND created_at > datetime('now', '-24 hours') AND nana_score >= ? ORDER BY created_at DESC LIMIT 50").all(since, minScore);
+      tokens = db.prepare("SELECT * FROM tokens WHERE created_at >= datetime(?) AND created_at > datetime('now', '-24 hours') AND nana_score >= ? AND liquidity >= ? ORDER BY created_at DESC LIMIT 50").all(since, minScore, minLiq);
     } else {
       // Default to last 24 hours for live feed
-      // We remove the strict nana_score filter for the live feed so users can see all detected tokens
-      tokens = db.prepare("SELECT * FROM tokens WHERE created_at > datetime('now', '-24 hours') ORDER BY created_at DESC LIMIT 50").all();
+      // Respect the user's min_nana_score and min_liquidity settings
+      tokens = db.prepare("SELECT * FROM tokens WHERE created_at > datetime('now', '-24 hours') AND nana_score >= ? AND liquidity >= ? ORDER BY created_at DESC LIMIT 50").all(minScore, minLiq);
     }
     res.json(tokens);
   });
