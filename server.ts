@@ -296,36 +296,18 @@ function getNeuralWeights() {
 
 function calculateNanaScore(factors: any) {
   const weights = getNeuralWeights();
-  let qualityScore = 0;
-  let qualityWeightSum = 0;
-  
-  const rugRisk = factors['Rug Risk'] || 0;
-  const rugWeight = weights.find((w: any) => w.factor === 'Rug Risk')?.weight || 0.15;
-
+  let score = 0;
   weights.forEach((w: any) => {
-    if (w.factor !== 'Rug Risk' && factors[w.factor] !== undefined) {
-      qualityScore += factors[w.factor] * w.weight;
-      qualityWeightSum += w.weight;
+    if (factors[w.factor] !== undefined) {
+      if (w.factor === 'Rug Risk') {
+        // Rug risk is a negative factor
+        score -= factors[w.factor] * w.weight;
+      } else {
+        score += factors[w.factor] * w.weight;
+      }
     }
   });
-
-  // Normalize quality score to 0-100 scale
-  if (qualityWeightSum > 0) {
-    qualityScore = qualityScore / qualityWeightSum;
-  }
-
-  // Safety Factor: 1.0 (perfect) to 0.0 (dead)
-  // Higher rugWeight makes the penalty more severe
-  // We use a non-linear decay so high risk tokens are penalized heavily
-  const safetyFactor = Math.pow(1 - (Math.min(100, rugRisk) / 100), 1 + (rugWeight * 5)); 
-  
-  let finalScore = qualityScore * safetyFactor;
-
-  // Hard floors for safety
-  if (rugRisk > 60) finalScore *= 0.5;
-  if (rugRisk > 85) finalScore = 0;
-
-  return Math.min(100, Math.max(0, finalScore));
+  return Math.min(100, Math.max(0, score));
 }
 
 async function learnFromTrades() {
@@ -891,13 +873,19 @@ async function scanNewPairs() {
   lastScan = Date.now();
   console.log('[Scanner] Scanning for new pairs...');
   try {
-    // Fetch latest pairs from DexScreener (Solana as example)
-    const response = await axios.get('https://api.dexscreener.com/token-profiles/latest/v1');
-    const profiles = response.data || [];
+    // 1. Fetch latest profiles (paid/boosted)
+    const profileRes = await axios.get('https://api.dexscreener.com/token-profiles/latest/v1').catch(() => ({ data: [] }));
+    const profiles = profileRes.data || [];
     
-    for (const profile of profiles.slice(0, 30)) {
-      const address = profile.tokenAddress;
-      const chain = profile.chainId;
+    // 2. Fetch latest boosted tokens
+    const boostedRes = await axios.get('https://api.dexscreener.com/token-boosts/latest/v1').catch(() => ({ data: [] }));
+    const boosted = boostedRes.data || [];
+
+    const allDetected = [...profiles, ...boosted];
+    
+    for (const item of allDetected.slice(0, 50)) {
+      const address = item.tokenAddress;
+      const chain = item.chainId;
       
       // Check if already exists
       const exists = db.prepare('SELECT id FROM tokens WHERE address = ?').get(address);
@@ -916,18 +904,14 @@ async function scanNewPairs() {
       // Basic filtering
       if (liquidity < 5000) continue;
 
-      // More realistic factor simulation
-      let rugRisk = 15 + Math.random() * 35; // Base risk 15-50
-      if (liquidity < 10000) rugRisk += 20; // Low liquidity is risky
-      if (mcap < 50000) rugRisk += 15; // Low mcap is risky
-      if (pair.boosts && pair.boosts.active > 0) rugRisk -= 10;
+      // More realistic rug risk calculation
+      let rugRisk = 20 + Math.random() * 30; // Base risk
+      if (liquidity > 50000) rugRisk -= 10;
+      if (mcap > 500000) rugRisk -= 5;
+      if (pair.boosts && pair.boosts.active > 0) rugRisk -= 5;
       
-      const sentiment = 30 + Math.random() * 60;
+      const sentiment = 50 + Math.random() * 40;
       const devActivity = Math.random() * 100;
-      
-      // Holder distribution: 0 (bad) to 100 (good)
-      let holderDist = 40 + Math.random() * 50;
-      if (rugRisk > 40) holderDist -= 20;
       
       const priceUsd = parseFloat(pair.priceUsd || '0');
       if (isNaN(priceUsd) || priceUsd <= 0) continue;
@@ -935,7 +919,7 @@ async function scanNewPairs() {
       // Improved scaling for the "trenches"
       const nanaScore = calculateNanaScore({
         'Liquidity Depth': Math.min(100, (liquidity / 25000) * 100), // $25k liquidity = 100 score for this factor
-        'Holder Distribution': holderDist, 
+        'Holder Distribution': 75 + (Math.random() * 15), 
         'Social Velocity': sentiment,
         'Dev Activity': devActivity,
         'Rug Risk': rugRisk
@@ -1031,7 +1015,7 @@ async function updatePrices() {
   if (isUpdatingPrices) return;
   isUpdatingPrices = true;
   try {
-    const tokens = db.prepare('SELECT id, address, chain, current_price, ath_price FROM tokens ORDER BY created_at DESC LIMIT 20').all();
+    const tokens = db.prepare('SELECT id, address, chain, current_price, ath_price FROM tokens ORDER BY created_at DESC LIMIT 50').all();
     
     for (const token of tokens) {
       try {
@@ -1108,8 +1092,9 @@ async function startServer() {
       // Use datetime(?) for robust comparison with ISO strings
       tokens = db.prepare("SELECT * FROM tokens WHERE created_at >= datetime(?) AND created_at > datetime('now', '-24 hours') AND nana_score >= ? ORDER BY created_at DESC LIMIT 50").all(since, minScore);
     } else {
-      // Default to last 24 hours for live feed to ensure it's not empty too often
-      tokens = db.prepare("SELECT * FROM tokens WHERE created_at > datetime('now', '-24 hours') AND nana_score >= ? ORDER BY created_at DESC LIMIT 50").all(minScore);
+      // Default to last 24 hours for live feed
+      // We remove the strict nana_score filter for the live feed so users can see all detected tokens
+      tokens = db.prepare("SELECT * FROM tokens WHERE created_at > datetime('now', '-24 hours') ORDER BY created_at DESC LIMIT 50").all();
     }
     res.json(tokens);
   });
