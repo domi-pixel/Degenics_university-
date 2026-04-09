@@ -9,6 +9,13 @@ import axios from 'axios';
 
 dotenv.config();
 
+function escapeMarkdown(text: string) {
+  if (!text) return '';
+  // Escape characters that have special meaning in Telegram's Markdown (legacy)
+  // These are: _, *, [, `
+  return String(text).replace(/[_*`\[]/g, '\\$&');
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -427,17 +434,27 @@ function initBot() {
       bot.on('message', async (msg) => {
         try {
           const chatId = msg.chat.id;
-          const text = msg.text || '';
+          const fromId = msg.from?.id;
+          const rawText = msg.text || '';
+          const trimmedText = rawText.trim();
           
-          console.log(`[Telegram] Received message from ${chatId}: ${text}`);
+          if (!trimmedText.startsWith('/')) return;
 
-          if (text === '/start') {
-            await bot?.sendMessage(chatId, `👼 *Welcome to Degenics Angel*\n\nYour Chat ID is: \`${chatId}\`\n\nAdd this ID to your Config in the dashboard to receive real-time alerts.\n\nType /commands to see what I can do.`, { parse_mode: 'Markdown' });
+          // Parse command and args
+          const parts = trimmedText.split(/\s+/);
+          const commandWithBot = parts[0].toLowerCase();
+          const command = commandWithBot.split('@')[0];
+          const args = parts.slice(1);
+
+          console.log(`[Telegram] Command received from ${chatId} (User: ${fromId}): ${command} ${args.join(' ')}`);
+
+          if (command === '/start') {
+            await bot?.sendMessage(chatId, `👼 *Welcome to Degenics Angel*\n\nYour Chat ID is: \`${chatId}\`\nYour User ID is: \`${fromId}\`\n\nAdd your User ID to your Config in the dashboard to receive real-time alerts.\n\nType /commands to see what I can do.`, { parse_mode: 'Markdown' });
             return;
           }
 
-        if (text === '/commands' || text === '/help') {
-          const help = `👼 *DEGENICS ANGEL COMMANDS*
+          if (command === '/commands' || command === '/help') {
+            const help = `👼 *DEGENICS ANGEL COMMANDS*
 
 /status - Check system health and scanning state
 /performance - View win rate and ROI stats
@@ -452,6 +469,8 @@ function initBot() {
 /testalert (alias: /test) - Test your alert connection
 /setrisk <val> - Set risk tolerance (0.1 - 3.0)
 /setprofit <val> - Set profit target ROI (1.1 - 5.0)
+/setscore <val> - Set minimum Nana Score (0 - 100)
+/setliq <val> - Set minimum liquidity ($)
 /buy <address> <amount> - Manual simulation buy (USD)
 /sell <address> <percent> - Manual simulation sell (%)
 /reset - Reset your simulation balances
@@ -461,19 +480,25 @@ function initBot() {
 /history24 - View top 20 tokens by ATH performance (Last 24h)
 /config_group <id> - Set your Telegram Group ID for alerts
 /commands (alias: /help) - Show this list`;
-          await bot?.sendMessage(chatId, help, { parse_mode: 'Markdown' });
-          return;
-        }
+            await bot?.sendMessage(chatId, help, { parse_mode: 'Markdown' });
+            return;
+          }
 
-        if (text === '/chatid' || text === '/id') {
-          await bot?.sendMessage(chatId, `Your Chat ID is: \`${chatId}\``, { parse_mode: 'Markdown' });
-          return;
-        }
+          if (command === '/chatid' || command === '/id') {
+            await bot?.sendMessage(chatId, `Chat ID: \`${chatId}\`\nUser ID: \`${fromId}\``, { parse_mode: 'Markdown' });
+            return;
+          }
 
-        const user = db.prepare("SELECT user_id FROM config WHERE key = 'chat_id' AND value = ?").get(chatId.toString());
+          if (command === '/ping') {
+            await bot?.sendMessage(chatId, "Pong! 👼 Bot is active and listening.");
+            return;
+          }
+
+        // Look up user by their personal chat_id (User ID)
+        const user = db.prepare("SELECT user_id FROM config WHERE key = 'chat_id' AND value = ?").get(fromId?.toString() || chatId.toString());
         const userId = user ? user.user_id : null;
 
-        if (text === '/portfolio') {
+        if (command === '/portfolio') {
           if (!userId) {
             await bot?.sendMessage(chatId, "👼 *Portfolio*\n\n_Your Telegram account is not linked to a Degenics user. Please set your Chat ID in the dashboard settings._", { parse_mode: 'Markdown' });
             return;
@@ -494,14 +519,14 @@ function initBot() {
           } else {
             holdings.forEach((h: any) => {
               const roi = ((h.current_price / h.avg_buy_price - 1) * 100).toFixed(1);
-              msgText += `• *${h.symbol}*: $${h.total_value.toFixed(2)} (${roi}%)\n  \`${h.address}\`\n`;
+              msgText += `• *${escapeMarkdown(h.symbol)}*: $${h.total_value.toFixed(2)} (${roi}%)\n  \`${h.address}\`\n`;
             });
           }
           await bot?.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
           return;
         }
 
-        if (text === '/settings') {
+        if (command === '/settings') {
           const risk = db.prepare("SELECT value FROM config WHERE key = 'risk_tolerance' AND (user_id = ? OR user_id IS NULL) ORDER BY user_id DESC").get(userId)?.value || '1.0';
           const profit = db.prepare("SELECT value FROM config WHERE key = 'profit_target' AND (user_id = ? OR user_id IS NULL) ORDER BY user_id DESC").get(userId)?.value || '2.0';
           const alerts = db.prepare("SELECT value FROM config WHERE key = 'alerts_enabled' AND (user_id = ? OR user_id IS NULL) ORDER BY user_id DESC").get(userId)?.value || 'true';
@@ -516,7 +541,7 @@ function initBot() {
           return;
         }
 
-        if (text === '/reset') {
+        if (command === '/reset') {
           if (!userId) {
             await bot?.sendMessage(chatId, "Please link your Chat ID in the dashboard first.");
             return;
@@ -527,18 +552,17 @@ function initBot() {
           return;
         }
 
-        if (text.startsWith('/buy ')) {
+        if (command === '/buy') {
           if (!userId) {
             await bot?.sendMessage(chatId, "Please link your Chat ID in the dashboard first.");
             return;
           }
-          const parts = text.split(' ');
-          if (parts.length < 3) {
+          if (args.length < 2) {
             await bot?.sendMessage(chatId, "Usage: /buy <address> <amount_usd>");
             return;
           }
-          const address = parts[1];
-          const amount = parseFloat(parts[2]);
+          const address = args[0];
+          const amount = parseFloat(args[1]);
           
           if (isNaN(amount) || amount <= 0) {
             await bot?.sendMessage(chatId, "Invalid amount.");
@@ -570,25 +594,24 @@ function initBot() {
             db.prepare('INSERT INTO simulation_trades (user_id, address, symbol, chain, type, amount_usd, price, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
               .run(userId, address, pair.baseToken.symbol, chain, 'buy', amount, price, 'Manual Telegram Buy');
 
-            await bot?.sendMessage(chatId, `👼 *Manual Buy Success*\n\nBought ${qty.toFixed(2)} ${pair.baseToken.symbol} for $${amount.toFixed(2)} on ${chain}.`, { parse_mode: 'Markdown' });
+            await bot?.sendMessage(chatId, `👼 *Manual Buy Success*\n\nBought ${qty.toFixed(2)} ${escapeMarkdown(pair.baseToken.symbol)} for $${amount.toFixed(2)} on ${escapeMarkdown(chain)}.`, { parse_mode: 'Markdown' });
           } catch (e) {
             await bot?.sendMessage(chatId, "Error processing buy order.");
           }
           return;
         }
 
-        if (text.startsWith('/sell ')) {
+        if (command === '/sell') {
           if (!userId) {
             await bot?.sendMessage(chatId, "Please link your Chat ID in the dashboard first.");
             return;
           }
-          const parts = text.split(' ');
-          if (parts.length < 3) {
+          if (args.length < 2) {
             await bot?.sendMessage(chatId, "Usage: /sell <address> <percent>");
             return;
           }
-          const address = parts[1];
-          const percent = parseFloat(parts[2]);
+          const address = args[0];
+          const percent = parseFloat(args[1]);
           
           if (isNaN(percent) || percent <= 0 || percent > 100) {
             await bot?.sendMessage(chatId, "Invalid percentage (1-100).");
@@ -622,14 +645,14 @@ function initBot() {
                 .run(sellQty, sellQty, sellPrice, sellPrice, userId, address);
             }
 
-            await bot?.sendMessage(chatId, `👼 *Manual Sell Success*\n\nSold ${percent}% of ${holding.symbol} for $${amountUsd.toFixed(2)}.\nProfit/Loss: $${profit.toFixed(2)}`, { parse_mode: 'Markdown' });
+            await bot?.sendMessage(chatId, `👼 *Manual Sell Success*\n\nSold ${percent}% of ${escapeMarkdown(holding.symbol)} for $${amountUsd.toFixed(2)}.\nProfit/Loss: $${profit.toFixed(2)}`, { parse_mode: 'Markdown' });
           } catch (e) {
             await bot?.sendMessage(chatId, "Error processing sell order.");
           }
           return;
         }
 
-        if (text === '/status') {
+        if (command === '/status') {
             const isActive = db.prepare("SELECT value FROM config WHERE key = ? AND user_id IS NULL").get('scanning_active')?.value === 'true';
             const tokenCount = db.prepare("SELECT COUNT(*) as count FROM tokens").get().count;
             const uptime = Math.floor(process.uptime() / 60);
@@ -645,7 +668,7 @@ function initBot() {
             return;
           }
 
-          if (text === '/performance') {
+          if (command === '/performance') {
             const trades = db.prepare("SELECT profit_usd FROM simulation_trades WHERE type = 'sell'").all();
             const wins = trades.filter((t: any) => t.profit_usd > 0).length;
             const total = trades.length;
@@ -662,32 +685,29 @@ function initBot() {
             return;
           }
 
-          if (text === '/top') {
+          if (command === '/top') {
             const topTokens = db.prepare("SELECT symbol, nana_score, current_price FROM tokens ORDER BY nana_score DESC LIMIT 5").all();
             let msgText = `👼 *Top 5 Tokens by Nana Score*\n\n`;
             topTokens.forEach((t: any, i: number) => {
-              msgText += `${i+1}. *${t.symbol}* - Score: ${t.nana_score.toFixed(1)} ($${t.current_price.toFixed(8)})\n`;
+              msgText += `${i+1}. *${escapeMarkdown(t.symbol)}* - Score: ${t.nana_score.toFixed(1)} ($${t.current_price.toFixed(8)})\n`;
             });
             await bot?.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
             return;
           }
 
-          if (text === '/recent' || text === '/signals') {
+          if (command === '/recent' || command === '/signals') {
             const recentTokens = db.prepare("SELECT symbol, nana_score, created_at FROM tokens ORDER BY created_at DESC LIMIT 5").all();
             let msgText = `👼 *5 Most Recent Signals*\n\n`;
             recentTokens.forEach((t: any, i: number) => {
-              msgText += `${i+1}. *${t.symbol}* - Score: ${t.nana_score.toFixed(1)} (${new Date(t.created_at).toLocaleTimeString()})\n`;
+              msgText += `${i+1}. *${escapeMarkdown(t.symbol)}* - Score: ${t.nana_score.toFixed(1)} (${new Date(t.created_at).toLocaleTimeString()})\n`;
             });
             await bot?.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
             return;
           }
 
-          if (text === '/filters') {
-            const user = db.prepare("SELECT user_id FROM config WHERE key = 'chat_id' AND value = ?").get(chatId.toString());
-            const uid = user ? user.user_id : null;
-            
+          if (command === '/filters') {
             const getConfig = (key: string, defaultVal: string) => {
-              return db.prepare("SELECT value FROM config WHERE key = ? AND (user_id = ? OR user_id IS NULL) ORDER BY user_id DESC LIMIT 1").get(key, uid)?.value || defaultVal;
+              return db.prepare("SELECT value FROM config WHERE key = ? AND (user_id = ? OR user_id IS NULL) ORDER BY user_id DESC LIMIT 1").get(key, userId)?.value || defaultVal;
             };
 
             const minScore = getConfig('min_nana_score', '70');
@@ -706,100 +726,91 @@ function initBot() {
             return;
           }
 
-          if (text === '/insights') {
+          if (command === '/insights') {
             const latestInsights = db.prepare("SELECT insight, timestamp FROM insights ORDER BY timestamp DESC LIMIT 3").all();
             let msgText = `👼 *Latest AI Insights*\n\n`;
             if (latestInsights.length === 0) msgText += "_No insights gathered yet._";
             latestInsights.forEach((ins: any) => {
-              msgText += `• ${ins.insight} (${new Date(ins.timestamp).toLocaleDateString()})\n\n`;
+              msgText += `• ${escapeMarkdown(ins.insight)} (${new Date(ins.timestamp).toLocaleDateString()})\n\n`;
             });
             await bot?.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
             return;
           }
 
-          if (text.startsWith('/learn ')) {
-            const parts = text.split(' ');
-            if (parts.length < 3) {
+          if (command === '/learn') {
+            if (args.length < 2) {
               await bot?.sendMessage(chatId, "Usage: /learn <address> <reason>");
               return;
             }
-            const address = parts[1];
-            const reason = parts.slice(2).join(' ');
+            const address = args[0];
+            const reason = args.slice(1).join(' ');
             db.prepare("INSERT INTO insights (address, insight, weight_adjustment) VALUES (?, ?, ?)").run(address, `Manual Learning: ${reason}`, 0.05);
             await bot?.sendMessage(chatId, `👼 *Learning Ingested*\n\nAddress: \`${address}\`\nReason: ${reason}\n\nAI weights will be adjusted in the next cycle.`, { parse_mode: 'Markdown' });
             return;
           }
 
-          if (text === '/testalert' || text === '/test') {
+          if (command === '/testalert' || command === '/test') {
             await bot?.sendMessage(chatId, "👼 *Alert Test*\n\nYour connection is active. You will receive signals here.", { parse_mode: 'Markdown' });
             return;
           }
 
-          if (text.startsWith('/setrisk ')) {
-            const val = parseFloat(text.split(' ')[1]);
+          if (command === '/setrisk') {
+            const val = parseFloat(args[0]);
             if (isNaN(val) || val < 0.1 || val > 3.0) {
               await bot?.sendMessage(chatId, "Please provide a value between 0.1 and 3.0");
               return;
             }
-            const user = db.prepare("SELECT user_id FROM config WHERE key = 'chat_id' AND value = ?").get(chatId.toString());
-            const userId = user ? user.user_id : null;
             db.prepare("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?, ?, ?)").run(userId, 'risk_tolerance', val.toString());
             await bot?.sendMessage(chatId, `👼 *Risk Tolerance Set:* ${val}`);
             return;
           }
 
-          if (text.startsWith('/setprofit ')) {
-            const val = parseFloat(text.split(' ')[1]);
+          if (command === '/setprofit') {
+            const val = parseFloat(args[0]);
             if (isNaN(val) || val < 1.1 || val > 5.0) {
               await bot?.sendMessage(chatId, "Please provide a value between 1.1 and 5.0");
               return;
             }
-            const user = db.prepare("SELECT user_id FROM config WHERE key = 'chat_id' AND value = ?").get(chatId.toString());
-            const userId = user ? user.user_id : null;
             db.prepare("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?, ?, ?)").run(userId, 'profit_target', val.toString());
             await bot?.sendMessage(chatId, `👼 *Profit Target Set:* ${val}x`);
             return;
           }
 
-          if (text.startsWith('/setscore ')) {
-            const val = parseFloat(text.split(' ')[1]);
+          if (command === '/setscore') {
+            const val = parseFloat(args[0]);
             if (isNaN(val) || val < 0 || val > 100) {
               await bot?.sendMessage(chatId, "Please provide a value between 0 and 100");
               return;
             }
-            const user = db.prepare("SELECT user_id FROM config WHERE key = 'chat_id' AND value = ?").get(chatId.toString());
-            const userId = user ? user.user_id : null;
             db.prepare("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?, ?, ?)").run(userId, 'min_nana_score', val.toString());
             await bot?.sendMessage(chatId, `👼 *Min Nana Score Set:* ${val}`);
             return;
           }
 
-          if (text.startsWith('/setliq ')) {
-            const val = parseFloat(text.split(' ')[1]);
+          if (command === '/setliq') {
+            const val = parseFloat(args[0]);
             if (isNaN(val) || val < 0) {
               await bot?.sendMessage(chatId, "Please provide a positive value");
               return;
             }
-            const user = db.prepare("SELECT user_id FROM config WHERE key = 'chat_id' AND value = ?").get(chatId.toString());
-            const userId = user ? user.user_id : null;
             db.prepare("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?, ?, ?)").run(userId, 'min_liquidity', val.toString());
             await bot?.sendMessage(chatId, `👼 *Min Liquidity Set:* $${val}`);
             return;
           }
 
-          if (text === '/pause') {
+          if (command === '/pause') {
             db.prepare("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (NULL, 'scanning_active', 'false')").run();
             await bot?.sendMessage(chatId, "👼 *Scanning Engine Paused* 🔴");
             return;
           }
 
-          if (text === '/resume') {
+          if (command === '/resume') {
             db.prepare("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (NULL, 'scanning_active', 'true')").run();
             await bot?.sendMessage(chatId, "👼 *Scanning Engine Resumed* 🟢");
             return;
           }
 
-          if (text === '/history') {
+          if (command === '/history') {
             const history = db.prepare(`
               SELECT symbol, ath_price, call_price, 
               CASE WHEN call_price > 0 THEN (ath_price / call_price) ELSE 1 END as multiplier 
@@ -817,14 +828,14 @@ function initBot() {
             } else {
               history.forEach((t: any, i: number) => {
                 const mult = t.multiplier || 1;
-                msgText += `${i+1}. *${t.symbol}* - ATH: $${(t.ath_price || 0).toFixed(6)} (${mult.toFixed(1)}x)\n`;
+                msgText += `${i+1}. *${escapeMarkdown(t.symbol)}* - ATH: $${(t.ath_price || 0).toFixed(6)} (${mult.toFixed(1)}x)\n`;
               });
             }
             await bot?.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
             return;
           }
 
-          if (text === '/history24') {
+          if (command === '/history24') {
             const history = db.prepare(`
               SELECT symbol, ath_price, call_price, 
               CASE WHEN call_price > 0 THEN (ath_price / call_price) ELSE 1 END as multiplier 
@@ -843,21 +854,19 @@ function initBot() {
             } else {
               history.forEach((t: any, i: number) => {
                 const mult = t.multiplier || 1;
-                msgText += `${i+1}. *${t.symbol}* - ATH: $${(t.ath_price || 0).toFixed(6)} (${mult.toFixed(1)}x)\n`;
+                msgText += `${i+1}. *${escapeMarkdown(t.symbol)}* - ATH: $${(t.ath_price || 0).toFixed(6)} (${mult.toFixed(1)}x)\n`;
               });
             }
             await bot?.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
             return;
           }
 
-          if (text.startsWith('/config_group ')) {
-            const groupId = text.split(' ')[1];
-            if (!groupId) {
+          if (command === '/config_group') {
+            if (args.length < 1) {
               await bot?.sendMessage(chatId, "Usage: /config_group <group_id>");
               return;
             }
-            const user = db.prepare("SELECT user_id FROM config WHERE key = 'chat_id' AND value = ?").get(chatId.toString());
-            const userId = user ? user.user_id : null;
+            const groupId = args[0];
             db.prepare("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?, ?, ?)").run(userId, 'telegram_group_id', groupId);
             await bot?.sendMessage(chatId, `👼 *Telegram Group ID Set:* \`${groupId}\``, { parse_mode: 'Markdown' });
             return;
@@ -865,6 +874,10 @@ function initBot() {
         } catch (err) {
           console.error('[Telegram] Message Handler Error:', err);
         }
+      });
+
+      bot.on('error', (error: any) => {
+        console.error('[Telegram] General Error:', error);
       });
 
       bot.on('polling_error', (error: any) => {
@@ -987,6 +1000,7 @@ async function scanNewPairs() {
 
         // Check if token meets this user's criteria
         if (nanaScore >= minScore && liquidity >= minLiq) {
+          console.log(`[Scanner] Token ${pair.baseToken.symbol} meets criteria for user ${uid || 'global'} (Score: ${nanaScore.toFixed(1)} >= ${minScore}, Liq: ${liquidity.toFixed(0)} >= ${minLiq})`);
           
           // A. Auto-Simulation Trading (only for real users, not global context)
           if (uid !== null && rugRisk < 15) {
@@ -1021,10 +1035,12 @@ async function scanNewPairs() {
           // B. Telegram Alerts
           if (bot && alertsEnabled && chatId) {
             try {
-              const alertMsg = `🚀 *New Signal Detected!*\n\n*Token:* ${pair.baseToken.symbol}\n*Score:* ${nanaScore.toFixed(1)}\n*Chain:* ${chain}\n*Address:* \`${address}\`\n\n[DexScreener](${pair.url})`;
-              bot.sendMessage(chatId, alertMsg, { parse_mode: 'Markdown' });
+              const alertMsg = `🚀 *New Signal Detected!*\n\n*Token:* ${escapeMarkdown(pair.baseToken.symbol)}\n*Score:* ${nanaScore.toFixed(1)}\n*Chain:* ${escapeMarkdown(chain)}\n*Address:* \`${address}\`\n\n[DexScreener](${pair.url})`;
+              console.log(`[Telegram] Sending alert to ${chatId} for ${pair.baseToken.symbol}`);
+              await bot.sendMessage(chatId, alertMsg, { parse_mode: 'Markdown' });
               if (groupId && groupId !== chatId) {
-                bot.sendMessage(groupId, alertMsg, { parse_mode: 'Markdown' });
+                console.log(`[Telegram] Sending group alert to ${groupId} for ${pair.baseToken.symbol}`);
+                await bot.sendMessage(groupId, alertMsg, { parse_mode: 'Markdown' });
               }
             } catch (err) {
               console.error(`Failed to send Telegram alert to user ${uid}:`, err);
@@ -1115,20 +1131,13 @@ async function startServer() {
     const rawUserId = req.query.userId;
     const userId = rawUserId ? parseInt(rawUserId as string) : null;
     
-    // Get the min_nana_score and min_liquidity for this user or global
-    const configRows = db.prepare("SELECT key, value FROM config WHERE (user_id = ? OR user_id IS NULL) AND key IN ('min_nana_score', 'min_liquidity') ORDER BY user_id DESC").all(userId);
-    
-    const minScore = parseFloat(configRows.find(r => r.key === 'min_nana_score')?.value || '70');
-    const minLiq = parseFloat(configRows.find(r => r.key === 'min_liquidity')?.value || '5000');
-
     let tokens;
     if (since) {
-      // Use datetime(?) for robust comparison with ISO strings
-      tokens = db.prepare("SELECT * FROM tokens WHERE created_at >= datetime(?) AND created_at > datetime('now', '-24 hours') AND nana_score >= ? AND liquidity >= ? ORDER BY created_at DESC LIMIT 50").all(since, minScore, minLiq);
+      // Show all tokens from today for the live feed to ensure visibility
+      tokens = db.prepare("SELECT * FROM tokens WHERE created_at >= datetime(?) AND created_at >= datetime('now', 'start of day') ORDER BY created_at DESC LIMIT 50").all(since);
     } else {
-      // Default to last 24 hours for live feed
-      // Respect the user's min_nana_score and min_liquidity settings
-      tokens = db.prepare("SELECT * FROM tokens WHERE created_at > datetime('now', '-24 hours') AND nana_score >= ? AND liquidity >= ? ORDER BY created_at DESC LIMIT 50").all(minScore, minLiq);
+      // Default to "Since 12 AM Today" for live feed
+      tokens = db.prepare("SELECT * FROM tokens WHERE created_at >= datetime('now', 'start of day') ORDER BY created_at DESC LIMIT 50").all();
     }
     res.json(tokens);
   });
@@ -1177,7 +1186,7 @@ async function startServer() {
 
   app.get('/api/stats', (req, res) => {
     const { scope } = req.query;
-    const timeFilter = scope === 'history' ? "" : "WHERE created_at > datetime('now', '-24 hours')";
+    const timeFilter = scope === 'history' ? "" : "WHERE created_at >= datetime('now', 'start of day')";
     
     try {
       const totalCalls = db.prepare(`SELECT COUNT(*) as count FROM tokens ${timeFilter}`).get()?.count || 0;
@@ -1218,7 +1227,7 @@ async function startServer() {
   app.get('/api/simulation/trades', (req, res) => {
     const userId = req.query.userId;
     if (!userId) return res.json([]);
-    const trades = db.prepare('SELECT * FROM simulation_trades WHERE user_id = ? ORDER BY timestamp DESC LIMIT 50').all(userId);
+    const trades = db.prepare("SELECT * FROM simulation_trades WHERE user_id = ? AND timestamp >= datetime('now', 'start of day') ORDER BY timestamp DESC LIMIT 50").all(userId);
     res.json(trades);
   });
 
@@ -1226,7 +1235,7 @@ async function startServer() {
     const userId = req.query.userId;
     if (!userId) return res.json({ totalProfit: 0, balances: [] });
     try {
-      const totalProfit = db.prepare("SELECT SUM(profit_usd) as total FROM simulation_trades WHERE user_id = ? AND type = ?").get(userId, 'sell')?.total || 0;
+      const totalProfit = db.prepare("SELECT SUM(profit_usd) as total FROM simulation_trades WHERE user_id = ? AND type = ? AND timestamp >= datetime('now', 'start of day')").get(userId, 'sell')?.total || 0;
       const balances = db.prepare("SELECT * FROM balances WHERE user_id = ?").all(userId);
       res.json({
         totalProfit,
@@ -1420,7 +1429,7 @@ async function startServer() {
     res.json({ success: true, active: next === 'true' });
   });
 
-  app.post('/api/simulate-token', (req, res) => {
+  app.post('/api/simulate-token', async (req, res) => {
     const mockToken = {
       address: '0x' + Math.random().toString(16).slice(2, 42),
       symbol: 'MOCK' + Math.floor(Math.random() * 100),
@@ -1463,10 +1472,12 @@ async function startServer() {
 
       for (const u of usersWithAlerts) {
         try {
-          const alertMsg = `🚀 *New Signal Detected!*\n\n*Token:* ${mockToken.symbol}\n*Score:* ${mockToken.nana_score.toFixed(1)}\n*Chain:* ${mockToken.chain}\n*Address:* \`${mockToken.address}\`\n\n[DexScreener](https://dexscreener.com/${mockToken.chain}/${mockToken.address})`;
-          bot.sendMessage(u.chat_id, alertMsg, { parse_mode: 'Markdown' });
+          const alertMsg = `🚀 *New Signal Detected!*\n\n*Token:* ${escapeMarkdown(mockToken.symbol)}\n*Score:* ${mockToken.nana_score.toFixed(1)}\n*Chain:* ${escapeMarkdown(mockToken.chain)}\n*Address:* \`${mockToken.address}\`\n\n[DexScreener](https://dexscreener.com/${mockToken.chain}/${mockToken.address})`;
+          console.log(`[Telegram] Sending manual alert to ${u.chat_id} for ${mockToken.symbol}`);
+          await bot.sendMessage(u.chat_id, alertMsg, { parse_mode: 'Markdown' });
           if (u.group_id && u.group_id !== u.chat_id) {
-            bot.sendMessage(u.group_id, alertMsg, { parse_mode: 'Markdown' });
+            console.log(`[Telegram] Sending manual group alert to ${u.group_id} for ${mockToken.symbol}`);
+            await bot.sendMessage(u.group_id, alertMsg, { parse_mode: 'Markdown' });
           }
         } catch (err) {
           console.error(`Failed to send Telegram alert to user:`, err);
@@ -1596,7 +1607,7 @@ async function startServer() {
             }
 
             if (milestoneReached > 0 && bot) {
-              const winMsg = `${milestoneText}\n\n*Token:* ${token.symbol}\n*Multiplier:* ${multiplier.toFixed(2)}x\n*Current Price:* $${currentPrice.toFixed(8)}\n*Call Price:* $${callPrice.toFixed(8)}\n\n[DexScreener](https://dexscreener.com/${token.chain}/${token.address})`;
+              const winMsg = `${milestoneText}\n\n*Token:* ${escapeMarkdown(token.symbol)}\n*Multiplier:* ${multiplier.toFixed(2)}x\n*Current Price:* $${currentPrice.toFixed(8)}\n*Call Price:* $${callPrice.toFixed(8)}\n\n[DexScreener](https://dexscreener.com/${token.chain}/${token.address})`;
               
               // Send to all users with alerts enabled
               const users = db.prepare(`
@@ -1609,11 +1620,17 @@ async function startServer() {
               `).all();
 
               for (const u of users) {
-                if (u.chat_id) {
-                  bot.sendMessage(u.chat_id, winMsg, { parse_mode: 'Markdown' }).catch(() => {});
-                }
-                if (u.group_id && u.group_id !== u.chat_id) {
-                  bot.sendMessage(u.group_id, winMsg, { parse_mode: 'Markdown' }).catch(() => {});
+                try {
+                  if (u.chat_id) {
+                    console.log(`[Telegram] Sending milestone alert to ${u.chat_id} for ${token.symbol}`);
+                    await bot.sendMessage(u.chat_id, winMsg, { parse_mode: 'Markdown' });
+                  }
+                  if (u.group_id && u.group_id !== u.chat_id) {
+                    console.log(`[Telegram] Sending milestone group alert to ${u.group_id} for ${token.symbol}`);
+                    await bot.sendMessage(u.group_id, winMsg, { parse_mode: 'Markdown' });
+                  }
+                } catch (err) {
+                  console.error(`Failed to send milestone alert:`, err);
                 }
               }
             }

@@ -644,7 +644,7 @@ export default function App() {
         fetch(`/api/simulation/stats${userQueryOnly}`),
         fetch(`/api/simulation/portfolio${userQueryOnly}`),
         fetch('/api/neural/weights'),
-        fetch(`/api/tokens/history?since=${new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()}`), // For performance (24h)
+        fetch(`/api/tokens/history?since=${new Date(new Date().setUTCHours(0,0,0,0)).toISOString()}`), // For performance (Since 12 AM Today)
         fetch(`/api/tokens/history?chain=${historyChainFilter}&winLoss=${historyWinFilter}&date=${historyDateFilter}`)
       ]);
 
@@ -1495,7 +1495,7 @@ export default function App() {
               <Card className="bg-gradient-to-br from-emerald-500/5 to-transparent">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-[10px] font-mono text-white/40 uppercase mb-1">Total Calls</p>
+                    <p className="text-[10px] font-mono text-white/40 uppercase mb-1">Total Calls (Today)</p>
                     <h3 className="text-2xl md:text-3xl font-bold tracking-tighter">{stats.totalCalls}</h3>
                   </div>
                   <Target className="w-6 h-6 md:w-8 md:h-8 text-emerald-500/20" />
@@ -1504,7 +1504,7 @@ export default function App() {
               <Card className="bg-gradient-to-br from-indigo-500/5 to-transparent">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-[10px] font-mono text-white/40 uppercase mb-1">Neural Sentiment</p>
+                    <p className="text-[10px] font-mono text-white/40 uppercase mb-1">Neural Sentiment (Today)</p>
                     <h3 className="text-2xl md:text-3xl font-bold tracking-tighter">{(stats.avgSentiment || 0).toFixed(1)}%</h3>
                   </div>
                   <Globe className="w-6 h-6 md:w-8 md:h-8 text-indigo-500/20" />
@@ -1513,7 +1513,7 @@ export default function App() {
               <Card className="bg-gradient-to-br from-amber-500/5 to-transparent">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-[10px] font-mono text-white/40 uppercase mb-1">Explosive Hits</p>
+                    <p className="text-[10px] font-mono text-white/40 uppercase mb-1">Explosive Hits (Today)</p>
                     <h3 className="text-2xl md:text-3xl font-bold tracking-tighter">{stats.explosive}</h3>
                   </div>
                   <Zap className="w-6 h-6 md:w-8 md:h-8 text-amber-500/20" />
@@ -1522,7 +1522,7 @@ export default function App() {
               <Card className="bg-gradient-to-br from-rose-500/5 to-transparent">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-[10px] font-mono text-white/40 uppercase mb-1">Rug Prevention</p>
+                    <p className="text-[10px] font-mono text-white/40 uppercase mb-1">Rug Prevention (Today)</p>
                     <h3 className="text-2xl md:text-3xl font-bold tracking-tighter">{stats.rugPrevention}%</h3>
                   </div>
                   <Shield className="w-6 h-6 md:w-8 md:h-8 text-rose-500/20" />
