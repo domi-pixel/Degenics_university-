@@ -60,8 +60,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_tokens_created_at ON tokens(created_at);
 
   CREATE TABLE IF NOT EXISTS config (
-    user_id INTEGER,
-    key TEXT,
+    user_id INTEGER NOT NULL DEFAULT 0,
+    key TEXT NOT NULL,
     value TEXT,
     PRIMARY KEY (user_id, key)
   );
@@ -69,11 +69,12 @@ db.exec(`
 
 // Seed default config if not exists
 const defaultConfigInitial = [
-  [null, 'scanning_active', 'true'],
-  [null, 'min_nana_score', '70'],
-  [null, 'min_liquidity', '5000'],
-  [null, 'max_rug_score', '50'],
-  [null, 'telegram_group_id', '']
+  [0, 'scanning_active', 'true'],
+  [0, 'min_nana_score', '50'],
+  [0, 'min_liquidity', '5000'],
+  [0, 'max_rug_score', '50'],
+  [0, 'telegram_group_id', ''],
+  [0, 'alerts_enabled', 'true']
 ];
 const insertConfigInitial = db.prepare('INSERT OR IGNORE INTO config (user_id, key, value) VALUES (?, ?, ?)');
 defaultConfigInitial.forEach(([uid, k, v]) => insertConfigInitial.run(uid, k, v));
@@ -530,9 +531,10 @@ function initBot() {
         }
 
         if (command === '/settings') {
-          const risk = db.prepare("SELECT value FROM config WHERE key = 'risk_tolerance' AND (user_id = ? OR user_id IS NULL) ORDER BY user_id DESC").get(userId)?.value || '1.0';
-          const profit = db.prepare("SELECT value FROM config WHERE key = 'profit_target' AND (user_id = ? OR user_id IS NULL) ORDER BY user_id DESC").get(userId)?.value || '2.0';
-          const alerts = db.prepare("SELECT value FROM config WHERE key = 'alerts_enabled' AND (user_id = ? OR user_id IS NULL) ORDER BY user_id DESC").get(userId)?.value || 'true';
+          const targetUid = userId || 0;
+          const risk = db.prepare("SELECT value FROM config WHERE key = 'risk_tolerance' AND (user_id = ? OR user_id = 0) ORDER BY user_id DESC").get(targetUid)?.value || '1.0';
+          const profit = db.prepare("SELECT value FROM config WHERE key = 'profit_target' AND (user_id = ? OR user_id = 0) ORDER BY user_id DESC").get(targetUid)?.value || '2.0';
+          const alerts = db.prepare("SELECT value FROM config WHERE key = 'alerts_enabled' AND (user_id = ? OR user_id = 0) ORDER BY user_id DESC").get(targetUid)?.value || 'true';
           
           const settings = `👼 *Your Settings*
 
@@ -656,7 +658,7 @@ function initBot() {
         }
 
         if (command === '/status') {
-            const isActive = db.prepare("SELECT value FROM config WHERE key = ? AND user_id IS NULL").get('scanning_active')?.value === 'true';
+            const isActive = db.prepare("SELECT value FROM config WHERE key = ? AND user_id = 0").get('scanning_active')?.value === 'true';
             const tokenCount = db.prepare("SELECT COUNT(*) as count FROM tokens").get().count;
             const uptime = Math.floor(process.uptime() / 60);
             
@@ -710,7 +712,8 @@ function initBot() {
 
           if (command === '/filters') {
             const getConfig = (key: string, defaultVal: string) => {
-              return db.prepare("SELECT value FROM config WHERE key = ? AND (user_id = ? OR user_id IS NULL) ORDER BY user_id DESC LIMIT 1").get(key, userId)?.value || defaultVal;
+              const targetUid = userId || 0;
+            return db.prepare("SELECT value FROM config WHERE key = ? AND (user_id = ? OR user_id = 0) ORDER BY user_id DESC LIMIT 1").get(key, targetUid)?.value || defaultVal;
             };
 
             const minScore = getConfig('min_nana_score', '70');
@@ -946,7 +949,7 @@ async function scanNewPairs() {
       const mcap = pair.fdv || 0;
       
       // Basic filtering using global config
-      const globalMinLiq = parseFloat(db.prepare("SELECT value FROM config WHERE key = 'min_liquidity' AND user_id IS NULL").get()?.value || '5000');
+      const globalMinLiq = parseFloat(db.prepare("SELECT value FROM config WHERE key = 'min_liquidity' AND user_id = 0").get()?.value || '5000');
       if (liquidity < globalMinLiq) continue;
 
       // More realistic rug risk calculation
@@ -985,14 +988,15 @@ async function scanNewPairs() {
       console.log(`[Scanner] New token detected: ${pair.baseToken.symbol} on ${chain} at $${priceUsd}`);
 
       // 1. Resolve all users who might be interested
-      // This includes all users in the 'users' table, plus the 'global' context (null user_id)
+      // This includes all users in the 'users' table, plus the 'global' context (user_id = 0)
       const allUserIds = db.prepare('SELECT id FROM users').all().map(u => u.id);
-      allUserIds.push(null); // Add global context
+      allUserIds.push(0); // Add global context
 
       for (const uid of allUserIds) {
         // Helper to get config for this user (with fallback to global)
         const getConfig = (key: string, defaultVal: string) => {
-          return db.prepare("SELECT value FROM config WHERE key = ? AND (user_id = ? OR user_id IS NULL) ORDER BY user_id DESC LIMIT 1").get(key, uid)?.value || defaultVal;
+          const targetUid = uid || 0;
+          return db.prepare("SELECT value FROM config WHERE key = ? AND (user_id = ? OR user_id = 0) ORDER BY user_id DESC LIMIT 1").get(key, targetUid)?.value || defaultVal;
         };
 
         const minScore = parseFloat(getConfig('min_nana_score', '70'));
@@ -1121,8 +1125,8 @@ async function startServer() {
   });
 
   app.get('/api/config', (req, res) => {
-    const userId = req.query.userId;
-    const rows = db.prepare('SELECT * FROM config WHERE user_id IS NULL OR user_id = ?').all(userId);
+    const userId = req.query.userId ? parseInt(req.query.userId as string) : 0;
+    const rows = db.prepare('SELECT * FROM config WHERE user_id = 0 OR user_id = ?').all(userId);
     const config = rows.reduce((acc: any, row: any) => {
       acc[row.key] = row.value;
       return acc;
@@ -1134,7 +1138,7 @@ async function startServer() {
     const { key, value, userId } = req.body;
     // Keys that are per-user
     const perUserKeys = ['chat_id', 'alerts_enabled', 'telegram_group_id', 'min_nana_score', 'risk_mode', 'risk_tolerance', 'profit_target', 'min_liquidity'];
-    const targetUserId = perUserKeys.includes(key) ? userId : null;
+    const targetUserId = perUserKeys.includes(key) ? (userId || 0) : 0;
     
     db.prepare('INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?, ?, ?)').run(targetUserId, key, String(value));
     res.json({ success: true });
@@ -1479,7 +1483,7 @@ async function startServer() {
       const usersWithAlerts = db.prepare(`
         SELECT DISTINCT c1.value as chat_id, c3.value as group_id
         FROM config c1
-        JOIN config c2 ON (c1.user_id = c2.user_id OR (c1.user_id IS NULL AND c2.user_id IS NULL))
+        JOIN config c2 ON (c1.user_id = c2.user_id)
         LEFT JOIN config c3 ON (c1.user_id = c3.user_id AND c3.key = 'telegram_group_id')
         WHERE c1.key = 'chat_id' AND c2.key = 'alerts_enabled' AND c2.value = 'true'
       `).all();
@@ -1624,27 +1628,31 @@ async function startServer() {
               const winMsg = `${milestoneText}\n\n*Token:* ${escapeMarkdown(token.symbol)}\n*Multiplier:* ${multiplier.toFixed(2)}x\n*Current Price:* $${currentPrice.toFixed(8)}\n*Call Price:* $${callPrice.toFixed(8)}\n\n[DexScreener](https://dexscreener.com/${token.chain}/${token.address})`;
               
               // Send to all users with alerts enabled
-              const users = db.prepare(`
-                SELECT DISTINCT c1.value as chat_id, c2.value as group_id 
-                FROM config c1 
-                LEFT JOIN config c2 ON c1.user_id = c2.user_id AND c2.key = 'telegram_group_id'
-                WHERE c1.key = 'chat_id' AND EXISTS (
-                  SELECT 1 FROM config c3 WHERE c3.user_id = c1.user_id AND c3.key = 'alerts_enabled' AND c3.value = 'true'
-                )
-              `).all();
+              const allUserIds = db.prepare('SELECT id FROM users').all().map(u => u.id);
+              allUserIds.push(0); // Add global context
 
-              for (const u of users) {
-                try {
-                  if (u.chat_id) {
-                    console.log(`[Telegram] Sending milestone alert to ${u.chat_id} for ${token.symbol}`);
-                    await bot.sendMessage(u.chat_id, winMsg, { parse_mode: 'Markdown' });
+              for (const uid of allUserIds) {
+                const getConfig = (key: string, defaultVal: string) => {
+                  return db.prepare("SELECT value FROM config WHERE key = ? AND (user_id = ? OR user_id = 0) ORDER BY user_id DESC LIMIT 1").get(key, uid)?.value || defaultVal;
+                };
+
+                const alertsEnabled = getConfig('alerts_enabled', 'false') === 'true';
+                const chatId = getConfig('chat_id', '');
+                const groupId = getConfig('telegram_group_id', '');
+
+                if (alertsEnabled && (chatId || groupId)) {
+                  try {
+                    if (chatId) {
+                      console.log(`[Telegram] Sending milestone alert to ${chatId} for ${token.symbol}`);
+                      await bot.sendMessage(chatId, winMsg, { parse_mode: 'Markdown' });
+                    }
+                    if (groupId && groupId !== chatId) {
+                      console.log(`[Telegram] Sending milestone group alert to ${groupId} for ${token.symbol}`);
+                      await bot.sendMessage(groupId, winMsg, { parse_mode: 'Markdown' });
+                    }
+                  } catch (err) {
+                    console.error(`Failed to send milestone alert to user ${uid}:`, err);
                   }
-                  if (u.group_id && u.group_id !== u.chat_id) {
-                    console.log(`[Telegram] Sending milestone group alert to ${u.group_id} for ${token.symbol}`);
-                    await bot.sendMessage(u.group_id, winMsg, { parse_mode: 'Markdown' });
-                  }
-                } catch (err) {
-                  console.error(`Failed to send milestone alert:`, err);
                 }
               }
             }

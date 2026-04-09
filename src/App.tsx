@@ -2335,19 +2335,24 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-mono text-white/40 uppercase">Telegram User ID</label>
-                    <input 
-                      type="text"
-                      value={config.chat_id}
-                      onChange={(e) => updateConfig('chat_id', e.target.value)}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-emerald-500 transition-colors"
-                      placeholder="Enter your Telegram User ID"
-                    />
-                    <p className="text-[8px] font-mono text-white/20 uppercase">
-                      Get your ID from @userinfobot or by using the link above
-                    </p>
-                  </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-mono text-white/40 uppercase">Telegram User ID</label>
+                      <input 
+                        type="text"
+                        value={config.chat_id}
+                        onChange={(e) => updateConfig('chat_id', e.target.value)}
+                        className={`w-full bg-white/5 border ${!config.chat_id ? 'border-amber-500/50' : 'border-white/10'} rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-emerald-500 transition-colors`}
+                        placeholder="Enter your Telegram User ID"
+                      />
+                      {!config.chat_id && (
+                        <p className="text-[8px] font-mono text-amber-500 uppercase animate-pulse">
+                          ⚠️ Required for personal alerts. Use /chatid in the bot to get yours.
+                        </p>
+                      )}
+                      <p className="text-[8px] font-mono text-white/20 uppercase">
+                        Get your ID from the bot or by using /chatid
+                      </p>
+                    </div>
                   <button 
                     onClick={async () => {
                       try {
