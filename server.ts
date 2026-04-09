@@ -13,7 +13,8 @@ function escapeMarkdown(text: string) {
   if (!text) return '';
   // Escape characters that have special meaning in Telegram's Markdown (legacy)
   // These are: _, *, [, `
-  return String(text).replace(/[_*`\[]/g, '\\$&');
+  // We also escape ] to be safe.
+  return String(text).replace(/[_*`\[\]]/g, '\\$&');
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -438,6 +439,8 @@ function initBot() {
           const rawText = msg.text || '';
           const trimmedText = rawText.trim();
           
+          console.log(`[Telegram] Message received from ${chatId} (User: ${fromId}): ${rawText}`);
+
           if (!trimmedText.startsWith('/')) return;
 
           // Parse command and args
@@ -478,7 +481,7 @@ function initBot() {
 /resume - Resume the scanning engine
 /history - View top 20 tokens by ATH performance (Overall)
 /history24 - View top 20 tokens by ATH performance (Last 24h)
-/config_group <id> - Set your Telegram Group ID for alerts
+/config\\_group <id> - Set your Telegram Group ID for alerts
 /commands (alias: /help) - Show this list`;
             await bot?.sendMessage(chatId, help, { parse_mode: 'Markdown' });
             return;
@@ -745,7 +748,7 @@ function initBot() {
             const address = args[0];
             const reason = args.slice(1).join(' ');
             db.prepare("INSERT INTO insights (address, insight, weight_adjustment) VALUES (?, ?, ?)").run(address, `Manual Learning: ${reason}`, 0.05);
-            await bot?.sendMessage(chatId, `👼 *Learning Ingested*\n\nAddress: \`${address}\`\nReason: ${reason}\n\nAI weights will be adjusted in the next cycle.`, { parse_mode: 'Markdown' });
+            await bot?.sendMessage(chatId, `👼 *Learning Ingested*\n\nAddress: \`${address}\`\nReason: ${escapeMarkdown(reason)}\n\nAI weights will be adjusted in the next cycle.`, { parse_mode: 'Markdown' });
             return;
           }
 
@@ -959,7 +962,7 @@ async function scanNewPairs() {
 
       // Improved scaling for the "trenches"
       const nanaScore = calculateNanaScore({
-        'Liquidity Depth': Math.min(100, (liquidity / 25000) * 100), // $25k liquidity = 100 score for this factor
+        'Liquidity Depth': Math.min(100, (liquidity / 5000) * 100), // $5k liquidity = 100 score for this factor (more lenient)
         'Holder Distribution': 75 + (Math.random() * 15), 
         'Social Velocity': sentiment,
         'Dev Activity': devActivity,
@@ -999,7 +1002,9 @@ async function scanNewPairs() {
         const groupId = getConfig('telegram_group_id', '');
 
         // Check if token meets this user's criteria
-        if (nanaScore >= minScore && liquidity >= minLiq) {
+        const isQualified = nanaScore >= minScore && liquidity >= minLiq;
+        
+        if (isQualified) {
           console.log(`[Scanner] Token ${pair.baseToken.symbol} meets criteria for user ${uid || 'global'} (Score: ${nanaScore.toFixed(1)} >= ${minScore}, Liq: ${liquidity.toFixed(0)} >= ${minLiq})`);
           
           // A. Auto-Simulation Trading (only for real users, not global context)
@@ -1033,18 +1038,27 @@ async function scanNewPairs() {
           }
 
           // B. Telegram Alerts
-          if (bot && alertsEnabled && chatId) {
+          if (bot && alertsEnabled && (chatId || groupId)) {
             try {
               const alertMsg = `🚀 *New Signal Detected!*\n\n*Token:* ${escapeMarkdown(pair.baseToken.symbol)}\n*Score:* ${nanaScore.toFixed(1)}\n*Chain:* ${escapeMarkdown(chain)}\n*Address:* \`${address}\`\n\n[DexScreener](${pair.url})`;
-              console.log(`[Telegram] Sending alert to ${chatId} for ${pair.baseToken.symbol}`);
-              await bot.sendMessage(chatId, alertMsg, { parse_mode: 'Markdown' });
+              
+              if (chatId) {
+                console.log(`[Telegram] Sending alert to User ${chatId} for ${pair.baseToken.symbol}`);
+                await bot.sendMessage(chatId, alertMsg, { parse_mode: 'Markdown' });
+              }
+              
               if (groupId && groupId !== chatId) {
-                console.log(`[Telegram] Sending group alert to ${groupId} for ${pair.baseToken.symbol}`);
+                console.log(`[Telegram] Sending alert to Group ${groupId} for ${pair.baseToken.symbol}`);
                 await bot.sendMessage(groupId, alertMsg, { parse_mode: 'Markdown' });
               }
             } catch (err) {
               console.error(`Failed to send Telegram alert to user ${uid}:`, err);
             }
+          }
+        } else {
+          // Log why it didn't qualify if alerts are enabled and we have a chat ID
+          if (alertsEnabled && (chatId || groupId)) {
+             console.log(`[Scanner] Token ${pair.baseToken.symbol} did NOT meet criteria for user ${uid || 'global'} (Score: ${nanaScore.toFixed(1)}/${minScore}, Liq: ${liquidity.toFixed(0)}/${minLiq})`);
           }
         }
       }
